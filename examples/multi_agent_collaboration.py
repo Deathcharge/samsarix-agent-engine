@@ -1,50 +1,36 @@
 #!/usr/bin/env python3
-"""
-Multi-Agent Collaboration Example - Agents working together via collective loop
-"""
+"""Run a bounded two-agent collaboration using the offline provider."""
 
 import asyncio
-import os
-from helix_llm_agent_engine import LLMAgentEngine, AgentOrchestrator
+
+from helix_llm_agent_engine import AgentOrchestrator, LLMAgentEngine
 
 
 async def main():
-    """Demonstrate multi-agent collaboration"""
-    
-    # Initialize engine and orchestrator
-    engine = LLMAgentEngine(
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
-        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-    )
-    orchestrator = AgentOrchestrator()
-    
-    # Create multiple specialized agents
-    print("🤖 Creating specialized agents...")
-    
+    """Demonstrate explicit amplification limits."""
+
+    engine = LLMAgentEngine(max_requests_per_session=2)
     sage = engine.create_agent(
-        name="Sage",
-        model="gpt-4",
-        system_prompt="You are a wise philosopher. Provide deep insights and wisdom.",
+        name="sage",
+        model="echo",
+        system_prompt="Identify one useful constraint.",
     )
-    
     architect = engine.create_agent(
-        name="Architect",
-        model="claude-3-opus",
-        system_prompt="You are a system architect. Design scalable solutions.",
+        name="architect",
+        model="echo",
+        system_prompt="Turn the prior contribution into a next step.",
     )
-    
-    # Add agents to orchestrator
+
+    orchestrator = AgentOrchestrator(max_agents=2)
     orchestrator.add_agent(sage)
     orchestrator.add_agent(architect)
-    
-    # Run collective loop
-    print("\n🔄 Running collective loop...")
+
     result = await orchestrator.collective_loop(
-        prompt="Design a consciousness framework for AI systems",
-        max_iterations=3,
+        prompt="Design a safe setup check",
+        max_iterations=1,
     )
-    
-    print(f"\n✨ Collective Result:\n{result}")
+    print(result)
+    await engine.close()
 
 
 if __name__ == "__main__":

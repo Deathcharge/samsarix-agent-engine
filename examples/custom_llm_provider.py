@@ -1,42 +1,43 @@
 #!/usr/bin/env python3
-"""
-Custom LLM Provider Example - Integrate a custom LLM provider
-"""
+"""Register a provider without coupling the engine to a vendor SDK."""
 
 import asyncio
+from collections.abc import Sequence
+
 from helix_llm_agent_engine import LLMAgentEngine
-from helix_llm_agent_engine.services import BaseLLMProvider
+from helix_llm_agent_engine.models import ChatMessage, ProviderResponse
+from helix_llm_agent_engine.providers import BaseLLMProvider
 
 
 class CustomLLMProvider(BaseLLMProvider):
-    """Example custom LLM provider"""
-    
-    async def invoke(self, messages, model, **kwargs):
-        """Custom inference logic"""
-        # Implement your custom LLM logic here
-        return "Response from custom provider"
+    """Small deterministic provider used only by this example."""
+
+    async def invoke(
+        self,
+        messages: Sequence[ChatMessage],
+        model: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> ProviderResponse:
+        del max_tokens, temperature
+        prompt = next(message.content for message in reversed(messages) if message.role == "user")
+        return ProviderResponse(content=f"{model} handled: {prompt}", model=model)
 
 
 async def main():
-    """Demonstrate custom LLM provider integration"""
-    
-    print("🔧 Custom LLM Provider Example\n")
-    
-    # Initialize engine
+    """Demonstrate the provider extension point."""
+
     engine = LLMAgentEngine()
-    
-    # Register custom provider
-    custom_provider = CustomLLMProvider()
-    engine.register_provider("custom", custom_provider)
-    
-    # Create agent using custom provider
+    engine.register_provider("custom", CustomLLMProvider())
     agent = engine.create_agent(
-        name="CustomAgent",
-        model="custom",
+        name="custom_agent",
+        model="internal-model",
         system_prompt="You are powered by a custom LLM provider.",
+        provider="custom",
     )
-    
-    print("✅ Custom provider registered and agent created")
+    print(await agent.invoke("hello"))
+    await engine.close()
 
 
 if __name__ == "__main__":
