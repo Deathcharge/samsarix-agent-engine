@@ -29,7 +29,11 @@ Unacceptable behaviors include:
 
 ## Reporting
 
-If you experience or witness unacceptable behavior, please report it by contacting the project maintainers at [conduct@helix-hub-shared.dev](mailto:conduct@helix-hub-shared.dev).
+If you experience or witness unacceptable behavior, use the repository's private
+maintainer contact when one is published. Until then, open a minimal issue asking
+for a private reporting channel; do not include sensitive details in that issue.
+The owner must establish and verify a dedicated conduct contact before a public
+release.
 
 All reports will be reviewed and investigated promptly. The project team is committed to maintaining confidentiality with regard to the reporter of an incident.
 

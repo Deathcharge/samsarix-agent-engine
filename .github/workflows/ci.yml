@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install product and development tools
+        run: python -m pip install -e ".[dev]"
+      - name: Lint
+        run: python -m ruff check src tests examples
+      - name: Format check
+        run: python -m ruff format --check src tests examples
+      - name: Type check
+        run: python -m mypy src/helix_llm_agent_engine
+      - name: Static security check
+        run: python -m bandit -r src/helix_llm_agent_engine -q
+      - name: Test
+        run: >-
+          python -m pytest
+          --cov=helix_llm_agent_engine
+          --cov-report=term-missing
+          --cov-report=xml
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install audit tool
+        run: python -m pip install "pip-audit>=2.10,<3"
+      - name: Audit runtime requirements
+        run: python -m pip_audit -r requirements.txt
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install build tools
+        run: python -m pip install "build>=1.2,<2" "twine>=6,<7"
+      - name: Build distributions
+        run: python -m build
+      - name: Check metadata
+        run: python -m twine check dist/*
+      - name: Reject legacy package contents
+        shell: python
+        run: |
+          import pathlib
+          import sys
+          import tarfile
+          import zipfile
+
+          wheel = next(pathlib.Path("dist").glob("*.whl"))
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+          forbidden = [name for name in names if name.startswith(("agents/", "services/"))]
+          sdist = next(pathlib.Path("dist").glob("*.tar.gz"))
+          with tarfile.open(sdist) as archive:
+              sdist_names = archive.getnames()
+          forbidden.extend(
+              name
+              for name in sdist_names
+              if len(name.split("/")) > 1 and name.split("/")[1] in {"agents", "services"}
+          )
+          if forbidden:
+              print("Legacy files entered wheel:", *forbidden, sep="\n", file=sys.stderr)
+              raise SystemExit(1)

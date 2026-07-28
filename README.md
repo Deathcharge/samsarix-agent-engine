@@ -1,93 +1,193 @@
-# helix-hub-shared
+# Helix LLM Agent Engine
 
-Shared utilities and helpers
+Helix LLM Agent Engine is a small Python SDK and CLI for running named, stateful
+prompt agents against an OpenAI-compatible chat endpoint. It is for developers
+who need a thin, auditable agent/session layer without adopting a tool graph,
+hosted control plane, database, or multi-provider gateway.
 
-## 🎯 Overview
+The package is currently **alpha quality**. Its offline path is usable for local
+evaluation; publication is intentionally blocked until the owner resolves the
+repository's license metadata. See [Productization](docs/PRODUCTIZATION.md).
 
-This repository is part of the [Helix Collective](https://github.com/Deathcharge/helix-platform), a comprehensive ecosystem for building intelligent, multi-agent systems with consciousness frameworks and advanced LLM integration.
+## What it does
 
-## 🚀 Quick Start
+- Creates named agents with a model and system prompt.
+- Keeps bounded, in-memory conversation history per session.
+- Enforces input, response, history, session, output-token, retry, and request-count limits.
+- Calls one OpenAI-compatible `chat/completions` endpoint with bounded retries,
+  timeouts, response size, and no redirect following.
+- Supports custom providers through a four-argument async interface.
+- Includes an explicit deterministic `EchoProvider` so setup can be evaluated
+  without credentials, network access, or API cost.
+- Exposes meaningful CLI exit codes and JSON output for automation.
 
-### Installation
+It does not execute tools, persist conversations, provide authentication, host an
+API, estimate provider bills, or silently fall back to another paid provider.
 
-\`\`\`bash
-git clone https://github.com/Deathcharge/helix-hub-shared.git
-cd helix-hub-shared
-pip install -r requirements.txt
-\`\`\`
+## Fastest successful setup
 
-### Basic Usage
+Prerequisites: Python 3.11 or newer and `pip`.
 
-See the [examples/](examples/) directory for working examples and integration patterns.
+```bash
+python -m venv .venv
+# macOS/Linux: source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e .
+helix-agent run "installation complete"
+```
 
-## 📚 Documentation
+Expected output:
 
-- **[Architecture](docs/ARCHITECTURE.md)** - System design and components
-- **[API Reference](docs/API.md)** - Complete API documentation
-- **[Integration Guide](docs/INTEGRATION.md)** - How to integrate with other Helix repos
-- **[Deployment](docs/DEPLOYMENT.md)** - Production deployment guide
-- **[Contributing](CONTRIBUTING.md)** - How to contribute
+```text
+Echo: installation complete
+```
 
-## 🔗 Related Repositories
+`EchoProvider` is a setup/test double, not an LLM. Run the complete offline
+example with `python examples/basic_agent.py`.
 
-- **[helix-platform](https://github.com/Deathcharge/helix-platform)** - Central hub and integration guide
-- **[helix-unified](https://github.com/Deathcharge/helix-unified)** - Main unified codebase
-- **[helix-core](https://github.com/Deathcharge/helix-core)** - Core utilities and LLM integration
+## Python API
 
-See [HELIX_REPOSITORY_INDEX.md](https://github.com/Deathcharge/helix-platform/blob/main/HELIX_REPOSITORY_INDEX.md) for the complete ecosystem map.
+```python
+import asyncio
 
-## 🧪 Testing
+from helix_llm_agent_engine import LLMAgentEngine
 
-Run tests with pytest:
 
-\`\`\`bash
-pytest tests/ -v --cov=src
-\`\`\`
+async def main() -> None:
+    engine = LLMAgentEngine(max_requests_per_session=10)
+    agent = engine.create_agent(
+        name="assistant",
+        model="echo",
+        system_prompt="Be concise.",
+    )
+    print(await agent.invoke("hello", session_id="demo"))
+    print(agent.get_metrics())
+    await engine.close()
 
-## 🔄 CI/CD
 
-This repository uses GitHub Actions for:
-- ✅ Automated testing (Python 3.9, 3.10, 3.11)
-- ✅ Code linting (flake8)
-- ✅ Type checking (mypy)
-- ✅ Security scanning (bandit, safety)
-- ✅ Coverage reporting (Codecov)
+asyncio.run(main())
+```
 
-See [.github/workflows/ci.yml](.github/workflows/ci.yml) for details.
+The public API is exported from `helix_llm_agent_engine`: `LLMAgentEngine`,
+`Agent`, `AgentOrchestrator`, `BaseLLMProvider`, `EchoProvider`,
+`OpenAICompatibleProvider`, `ChatMessage`, `ProviderResponse`, and the documented
+exception classes.
 
-## 📋 Requirements
+## OpenAI-compatible endpoint
 
-- Python 3.9+
-- Dependencies listed in requirements.txt
-- Development dependencies in requirements-dev.txt
+Pass secrets through an environment variable, never a command-line argument:
 
-## 🤝 Contributing
+```bash
+export OPENAI_API_KEY="replace-me"  # PowerShell: $env:OPENAI_API_KEY="replace-me"
+helix-agent run "Summarize this release" \
+  --provider openai \
+  --model your-model-id
+```
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
-- Development setup
-- Code style guide
-- Testing requirements
-- Pull request process
+For a local or third-party compatible service:
 
-## 📄 License
+```bash
+helix-agent run "health check" \
+  --provider openai \
+  --model your-model-id \
+  --base-url http://127.0.0.1:8000/v1 \
+  --json
+```
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+`--base-url` is trusted developer/operator configuration. The client accepts only
+absolute HTTP(S) URLs without embedded credentials, query strings, or fragments.
+It does not follow redirects. Applications that let end users select this value
+must add their own destination allowlist and network egress controls.
 
-## 🆘 Support
+Use `helix-agent --help` and `helix-agent run --help` for every option. Exit code
+`2` means invalid input/configuration, `3` means provider failure, and `130` means
+the user cancelled the command.
 
-- **Issues**: Report bugs or request features via [GitHub Issues](https://github.com/Deathcharge/helix-hub-shared/issues)
-- **Discussions**: Ask questions in [GitHub Discussions](https://github.com/Deathcharge/helix-hub-shared/discussions)
-- **Documentation**: See the [docs/](docs/) directory
-- **Ecosystem**: Visit [helix-platform](https://github.com/Deathcharge/helix-platform)
+## Configuration and cost controls
 
-## 🎓 Learn More
+The engine defaults to 20 retained history messages, 100 sessions, 20,000 input
+characters, 1,024 requested output tokens, and 100 requests per session. The
+default retained response limit is 200,000 characters. The OpenAI-compatible
+provider defaults to a 30-second timeout, two retries, no
+redirects, and a 2 MB response cap. All limits are configurable within guarded
+ranges.
 
-- [Helix Collective Repository Index](https://github.com/Deathcharge/helix-platform/blob/main/HELIX_REPOSITORY_INDEX.md)
-- [Architecture Guide](https://github.com/Deathcharge/helix-platform/blob/main/docs/ARCHITECTURE.md)
-- [Integration Examples](https://github.com/Deathcharge/helix-platform/tree/main/examples)
+These are local safety limits, not provider quotas. A two-agent, three-iteration
+orchestration performs six provider calls. The maximum built-in orchestration is
+8 agents × 5 iterations = 40 calls. Confirm model pricing and enforce provider
+account budgets before using paid endpoints.
 
----
+## Development
 
-**Status**: ✅ Production Ready  
-**Last Updated**: June 19, 2026  
-**Maintainer**: Helix Collective Contributors
+```bash
+python -m pip install -e ".[dev]"
+python -m ruff check src tests examples
+python -m ruff format --check src tests examples
+python -m mypy src/helix_llm_agent_engine
+python -m bandit -r src/helix_llm_agent_engine -q
+python -m pip_audit -r requirements.txt
+python -m pytest --cov=helix_llm_agent_engine --cov-report=term-missing
+python -m build
+python -m twine check dist/*
+```
+
+The CI workflow is configured to run the same product checks on Python 3.11–3.14
+and verify wheel/sdist contents. The large `agents/` and `services/` directories are preserved legacy
+extractions and are not installed or covered by release claims; see
+[Legacy code](docs/LEGACY_CODE.md).
+
+## Architecture
+
+```text
+CLI / application
+      |
+LLMAgentEngine -- provider registry and bounded defaults
+      |
+Agent ---------- validated input, session history, metrics, request budget
+      |
+BaseLLMProvider
+      +-- EchoProvider (offline setup/test double)
+      +-- OpenAICompatibleProvider (bounded HTTP client)
+      +-- application-defined provider
+```
+
+Conversation state is process-local and is lost on restart. Each `Agent`
+serializes its own invocations so turns cannot be reordered; use separate agents
+for independent concurrency.
+
+## Security and privacy
+
+- Prompts and responses are sent only to the provider explicitly selected by the
+  caller. Echo mode makes no network request.
+- The package does not log prompts, responses, or API keys.
+- HTTP error messages omit response bodies and transport exception text.
+- No telemetry is collected.
+- Conversation history remains in memory until evicted or cleared.
+- Model output is untrusted data; this package never executes it.
+- Plain-text CLI output replaces terminal control characters; JSON mode escapes them.
+
+Read [SECURITY.md](SECURITY.md) for trust boundaries and reporting guidance.
+
+## Maturity and limitations
+
+- Alpha: the API may change before `1.0`.
+- Only non-streaming OpenAI-compatible chat completions are built in.
+- No persistent history, tool execution, structured output, provider-specific
+  Anthropic support, token estimation, or automatic fallback.
+- The repository contains historical backend extracts that depend on private
+  `helix-unified` modules and are not part of this product.
+- Package publication is blocked pending owner confirmation of package name,
+  licensing text, and publishing identity.
+
+## Contributing and license status
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the verified development workflow and
+[CHANGELOG.md](CHANGELOG.md) for release changes.
+
+The root `LICENSE` identifies Business Source License 1.1, but its Licensed Work
+name and timing terms do not clearly identify this repository. It conflicts with
+claims in `LICENSE.PROPRIETARY`. No SPDX license is asserted in package metadata,
+and the package has a `Private :: Do Not Upload` classifier until the owner makes
+and documents the legal decision. Do not treat this README as legal advice or as
+a grant beyond the repository's license files.
