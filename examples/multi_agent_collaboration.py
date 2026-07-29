@@ -3,7 +3,7 @@
 
 import asyncio
 
-from helix_llm_agent_engine import AgentOrchestrator, LLMAgentEngine
+from samsarix_agent_engine import AgentOrchestrator, LLMAgentEngine
 
 
 async def main():

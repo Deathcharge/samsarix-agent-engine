@@ -1,3 +1,7 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 """Command-line interface for a single bounded agent invocation."""
 
 from __future__ import annotations
@@ -12,13 +16,13 @@ from urllib.parse import urlsplit
 
 from . import __version__
 from .engine import LLMAgentEngine
-from .errors import ConfigurationError, HelixAgentError, InputValidationError
+from .errors import ConfigurationError, InputValidationError, SamsarixAgentError
 from .providers import OpenAICompatibleProvider
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="helix-agent",
+        prog="samsarix-agent",
         description="Run a small, bounded prompt agent over echo or an OpenAI-compatible endpoint.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -32,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--system-prompt", default="You are a concise, helpful assistant.")
     run.add_argument(
         "--base-url",
-        default=os.getenv("HELIX_LLM_BASE_URL", "https://api.openai.com/v1"),
+        default=os.getenv("SAMSARIX_LLM_BASE_URL", "https://api.openai.com/v1"),
         help="OpenAI-compatible API base URL",
     )
     run.add_argument(
@@ -124,7 +128,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ConfigurationError, InputValidationError) as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2
-    except HelixAgentError as exc:
+    except SamsarixAgentError as exc:
         print(f"provider error: {exc}", file=sys.stderr)
         return 3
 

@@ -1,9 +1,16 @@
 import pytest
 
-from helix_llm_agent_engine import AgentMetrics, ChatMessage, InputValidationError, ProviderResponse
+from samsarix_agent_engine import (
+    AgentMetrics,
+    ChatMessage,
+    InputValidationError,
+    ProviderResponse,
+    SamsarixAgentError,
+)
 
 
 def test_chat_message_validation_and_serialization() -> None:
+    assert issubclass(InputValidationError, SamsarixAgentError)
     assert ChatMessage(role="user", content="hello").as_dict() == {
         "role": "user",
         "content": "hello",

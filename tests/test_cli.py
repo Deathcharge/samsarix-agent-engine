@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from helix_llm_agent_engine import ProviderError, __version__, cli
+from samsarix_agent_engine import ProviderError, __version__, cli
 
 
 def test_cli_runs_offline_without_credentials(capsys: pytest.CaptureFixture[str]) -> None:
@@ -75,4 +75,4 @@ def test_cli_version(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as captured:
         cli.main(["--version"])
     assert captured.value.code == 0
-    assert capsys.readouterr().out == f"helix-agent {__version__}\n"
+    assert capsys.readouterr().out == f"samsarix-agent {__version__}\n"

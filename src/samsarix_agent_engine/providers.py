@@ -1,3 +1,7 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 """Built-in provider implementations.
 
 The network provider intentionally targets the small OpenAI-compatible chat
@@ -99,7 +103,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         self.retry_backoff = retry_backoff
         self.max_response_bytes = max_response_bytes
         self._owns_client = client is None
-        headers = {"Accept": "application/json", "User-Agent": "helix-llm-agent-engine/0.1"}
+        headers = {"Accept": "application/json", "User-Agent": "samsarix-agent-engine/0.1"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key.strip()}"
         self._client = client or httpx.AsyncClient(

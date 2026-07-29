@@ -3,7 +3,7 @@
 ## Supported surface
 
 The supported product surface is the Python package under
-`src/helix_llm_agent_engine/` and the `helix-agent` CLI. Version `0.1.x` is alpha;
+`src/samsarix_agent_engine/` and the `samsarix-agent` CLI. Version `0.1.x` is alpha;
 there is not yet a published, production-supported release.
 
 The root `agents/` and `services/` directories are preserved legacy extracts, are
@@ -30,10 +30,9 @@ describe the supported package unless an actual package path reaches them.
 
 ## Reporting
 
-Use the repository's GitHub Security Advisory interface when it is enabled. If it
-is unavailable, open a minimal issue requesting a private reporting channel and do
-not include exploit details or secrets in the public issue. The owner still needs
-to publish a dedicated security contact.
+Use the repository's GitHub Security Advisory interface when it is enabled, or
+email support@samsarix.com with `[SECURITY]` in the subject. Do not include exploit
+details, private user content, or secrets in a public issue.
 
 Include the affected version or commit, the smallest reproducer, impact, required
 preconditions, and whether a real credential or external service was involved.

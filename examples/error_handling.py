@@ -3,7 +3,7 @@
 
 import asyncio
 
-from helix_llm_agent_engine import BudgetExceededError, LLMAgentEngine
+from samsarix_agent_engine import BudgetExceededError, LLMAgentEngine
 
 
 async def main():

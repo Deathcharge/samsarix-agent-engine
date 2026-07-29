@@ -1,12 +1,16 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 """A small, bounded agent layer for OpenAI-compatible model endpoints."""
 
 from .engine import Agent, AgentOrchestrator, LLMAgentEngine
 from .errors import (
     BudgetExceededError,
     ConfigurationError,
-    HelixAgentError,
     InputValidationError,
     ProviderError,
+    SamsarixAgentError,
 )
 from .models import AgentMetrics, ChatMessage, ProviderResponse
 from .providers import BaseLLMProvider, EchoProvider, OpenAICompatibleProvider
@@ -22,11 +26,11 @@ __all__ = [
     "ChatMessage",
     "ConfigurationError",
     "EchoProvider",
-    "HelixAgentError",
     "InputValidationError",
     "LLMAgentEngine",
     "OpenAICompatibleProvider",
     "ProviderError",
     "ProviderResponse",
+    "SamsarixAgentError",
     "__version__",
 ]

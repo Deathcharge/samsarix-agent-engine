@@ -28,13 +28,13 @@ jobs:
       - name: Format check
         run: python -m ruff format --check src tests examples
       - name: Type check
-        run: python -m mypy src/helix_llm_agent_engine
+        run: python -m mypy src/samsarix_agent_engine
       - name: Static security check
-        run: python -m bandit -r src/helix_llm_agent_engine -q
+        run: python -m bandit -r src/samsarix_agent_engine -q
       - name: Test
         run: >-
           python -m pytest
-          --cov=helix_llm_agent_engine
+          --cov=samsarix_agent_engine
           --cov-report=term-missing
           --cov-report=xml
 
@@ -76,15 +76,42 @@ jobs:
           wheel = next(pathlib.Path("dist").glob("*.whl"))
           with zipfile.ZipFile(wheel) as archive:
               names = archive.namelist()
-          forbidden = [name for name in names if name.startswith(("agents/", "services/"))]
+          required = {
+              "samsarix_agent_engine/__init__.py",
+              "samsarix_agent_engine/py.typed",
+          }
+          missing = required.difference(names)
+          forbidden = [
+              name
+              for name in names
+              if name.startswith(("agents/", "services/", "helix_llm_agent_engine/"))
+          ]
           sdist = next(pathlib.Path("dist").glob("*.tar.gz"))
           with tarfile.open(sdist) as archive:
               sdist_names = archive.getnames()
+          sdist_required_suffixes = {
+              "/CITATION.cff",
+              "/LICENSING.md",
+              "/docs/GETTING_STARTED.md",
+              "/examples/basic_agent.py",
+          }
+          missing_sdist = {
+              suffix
+              for suffix in sdist_required_suffixes
+              if not any(name.endswith(suffix) for name in sdist_names)
+          }
           forbidden.extend(
               name
               for name in sdist_names
               if len(name.split("/")) > 1 and name.split("/")[1] in {"agents", "services"}
           )
-          if forbidden:
-              print("Legacy files entered wheel:", *forbidden, sep="\n", file=sys.stderr)
+          if missing or missing_sdist or forbidden:
+              print("Missing required wheel files:", *sorted(missing), sep="\n", file=sys.stderr)
+              print(
+                  "Missing required sdist files:",
+                  *sorted(missing_sdist),
+                  sep="\n",
+                  file=sys.stderr,
+              )
+              print("Forbidden files entered artifacts:", *forbidden, sep="\n", file=sys.stderr)
               raise SystemExit(1)

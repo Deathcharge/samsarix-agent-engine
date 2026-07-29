@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from helix_llm_agent_engine import (
+from samsarix_agent_engine import (
     AgentOrchestrator,
     BaseLLMProvider,
     BudgetExceededError,

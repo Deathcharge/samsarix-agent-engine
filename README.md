@@ -1,13 +1,13 @@
-# Helix LLM Agent Engine
+# Samsarix Agent Engine
 
-Helix LLM Agent Engine is a small Python SDK and CLI for running named, stateful
+Samsarix Agent Engine is a small Python SDK and CLI for running named, stateful
 prompt agents against an OpenAI-compatible chat endpoint. It is for developers
 who need a thin, auditable agent/session layer without adopting a tool graph,
 hosted control plane, database, or multi-provider gateway.
 
 The package is currently **alpha quality**. Its offline path is usable for local
-evaluation; publication is intentionally blocked until the owner resolves the
-repository's license metadata. See [Productization](docs/PRODUCTIZATION.md).
+evaluation, and its release process remains gated on protected PyPI publishing and
+CI verification. See [Productization](docs/PRODUCTIZATION.md).
 
 ## What it does
 
@@ -34,7 +34,7 @@ python -m venv .venv
 # Windows PowerShell: .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -e .
-helix-agent run "installation complete"
+samsarix-agent run "installation complete"
 ```
 
 Expected output:
@@ -51,7 +51,7 @@ example with `python examples/basic_agent.py`.
 ```python
 import asyncio
 
-from helix_llm_agent_engine import LLMAgentEngine
+from samsarix_agent_engine import LLMAgentEngine
 
 
 async def main() -> None:
@@ -69,7 +69,7 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-The public API is exported from `helix_llm_agent_engine`: `LLMAgentEngine`,
+The public API is exported from `samsarix_agent_engine`: `LLMAgentEngine`,
 `Agent`, `AgentOrchestrator`, `BaseLLMProvider`, `EchoProvider`,
 `OpenAICompatibleProvider`, `ChatMessage`, `ProviderResponse`, and the documented
 exception classes.
@@ -80,7 +80,7 @@ Pass secrets through an environment variable, never a command-line argument:
 
 ```bash
 export OPENAI_API_KEY="replace-me"  # PowerShell: $env:OPENAI_API_KEY="replace-me"
-helix-agent run "Summarize this release" \
+samsarix-agent run "Summarize this release" \
   --provider openai \
   --model your-model-id
 ```
@@ -88,7 +88,7 @@ helix-agent run "Summarize this release" \
 For a local or third-party compatible service:
 
 ```bash
-helix-agent run "health check" \
+samsarix-agent run "health check" \
   --provider openai \
   --model your-model-id \
   --base-url http://127.0.0.1:8000/v1 \
@@ -100,7 +100,7 @@ absolute HTTP(S) URLs without embedded credentials, query strings, or fragments.
 It does not follow redirects. Applications that let end users select this value
 must add their own destination allowlist and network egress controls.
 
-Use `helix-agent --help` and `helix-agent run --help` for every option. Exit code
+Use `samsarix-agent --help` and `samsarix-agent run --help` for every option. Exit code
 `2` means invalid input/configuration, `3` means provider failure, and `130` means
 the user cancelled the command.
 
@@ -124,10 +124,10 @@ account budgets before using paid endpoints.
 python -m pip install -e ".[dev]"
 python -m ruff check src tests examples
 python -m ruff format --check src tests examples
-python -m mypy src/helix_llm_agent_engine
-python -m bandit -r src/helix_llm_agent_engine -q
+python -m mypy src/samsarix_agent_engine
+python -m bandit -r src/samsarix_agent_engine -q
 python -m pip_audit -r requirements.txt
-python -m pytest --cov=helix_llm_agent_engine --cov-report=term-missing
+python -m pytest --cov=samsarix_agent_engine --cov-report=term-missing
 python -m build
 python -m twine check dist/*
 ```
@@ -177,17 +177,16 @@ Read [SECURITY.md](SECURITY.md) for trust boundaries and reporting guidance.
   Anthropic support, token estimation, or automatic fallback.
 - The repository contains historical backend extracts that depend on private
   `helix-unified` modules and are not part of this product.
-- Package publication is blocked pending owner confirmation of package name,
-  licensing text, and publishing identity.
+- The GitHub repository still uses its historical `helix-hub-shared` slug; the
+  published distribution and import namespace use Samsarix branding.
 
-## Contributing and license status
+## Contributing and licensing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the verified development workflow and
 [CHANGELOG.md](CHANGELOG.md) for release changes.
 
-The root `LICENSE` identifies Business Source License 1.1, but its Licensed Work
-name and timing terms do not clearly identify this repository. It conflicts with
-claims in `LICENSE.PROPRIETARY`. No SPDX license is asserted in package metadata,
-and the package has a `Private :: Do Not Upload` classifier until the owner makes
-and documents the legal decision. Do not treat this README as legal advice or as
-a grant beyond the repository's license files.
+The current source tree is licensed under the Mozilla Public License 2.0. Modified
+covered files stay under MPL-2.0 when distributed, while a larger application may
+license its separate files differently. See [LICENSING.md](LICENSING.md),
+[NOTICE](NOTICE), and [TRADEMARKS.md](TRADEMARKS.md). General questions can go to
+contact@samsarix.com and product support to support@samsarix.com.

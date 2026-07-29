@@ -3,14 +3,16 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "helix-llm-agent-engine"
+name = "samsarix-agent-engine"
 version = "0.1.0"
 description = "A small, bounded Python agent layer for OpenAI-compatible model endpoints"
 readme = "README.md"
 requires-python = ">=3.11"
-license-files = ["LICENSE", "LICENSE.PROPRIETARY"]
-authors = [{ name = "Deathcharge" }]
-keywords = ["agents", "llm", "openai-compatible", "cli"]
+license = "MPL-2.0"
+license-files = ["LICENSE", "LICENSING.md", "NOTICE", "TRADEMARKS.md"]
+authors = [{ name = "Samsarix LLC", email = "contact@samsarix.com" }]
+maintainers = [{ name = "Samsarix Support", email = "support@samsarix.com" }]
+keywords = ["agents", "llm", "openai-compatible", "cli", "samsarix"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -20,7 +22,6 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Libraries :: Python Modules",
-  "Private :: Do Not Upload",
 ]
 dependencies = ["httpx>=0.27,<1"]
 
@@ -38,9 +39,10 @@ dev = [
 ]
 
 [project.scripts]
-helix-agent = "helix_llm_agent_engine.cli:main"
+samsarix-agent = "samsarix_agent_engine.cli:main"
 
 [project.urls]
+Homepage = "https://www.samsarix.com"
 Repository = "https://github.com/Deathcharge/helix-hub-shared"
 Issues = "https://github.com/Deathcharge/helix-hub-shared/issues"
 
@@ -49,7 +51,10 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["helix_llm_agent_engine*"]
+include = ["samsarix_agent_engine*"]
+
+[tool.setuptools.package-data]
+samsarix_agent_engine = ["py.typed"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
@@ -62,7 +67,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["helix_llm_agent_engine"]
+source = ["samsarix_agent_engine"]
 
 [tool.coverage.report]
 show_missing = true
@@ -85,5 +90,5 @@ ignore = ["S101"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["src/helix_llm_agent_engine"]
+files = ["src/samsarix_agent_engine"]
 warn_unreachable = true

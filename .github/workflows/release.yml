@@ -1,0 +1,115 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build release artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Verify release tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: python
+        run: |
+          import os
+          import pathlib
+          import tomllib
+
+          metadata = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          expected = f"v{metadata['project']['version']}"
+          actual = os.environ["RELEASE_TAG"]
+          if actual != expected:
+              raise SystemExit(f"release tag {actual!r} must equal {expected!r}")
+      - name: Install release tools
+        run: python -m pip install "build==1.5.0" "twine==6.2.0"
+      - name: Build distributions
+        run: python -m build
+      - name: Verify metadata
+        run: python -m twine check dist/*
+      - name: Verify artifact contents
+        shell: python
+        run: |
+          import pathlib
+          import tarfile
+          import zipfile
+
+          wheel = next(pathlib.Path("dist").glob("*.whl"))
+          with zipfile.ZipFile(wheel) as archive:
+              wheel_names = archive.namelist()
+          required_wheel = {
+              "samsarix_agent_engine/__init__.py",
+              "samsarix_agent_engine/py.typed",
+          }
+          missing_wheel = required_wheel.difference(wheel_names)
+          forbidden = [
+              name
+              for name in wheel_names
+              if name.startswith(("agents/", "services/", "helix_llm_agent_engine/"))
+          ]
+
+          sdist = next(pathlib.Path("dist").glob("*.tar.gz"))
+          with tarfile.open(sdist) as archive:
+              sdist_names = archive.getnames()
+          required_sdist = {
+              "/CITATION.cff",
+              "/LICENSING.md",
+              "/docs/GETTING_STARTED.md",
+              "/examples/basic_agent.py",
+          }
+          missing_sdist = {
+              suffix
+              for suffix in required_sdist
+              if not any(name.endswith(suffix) for name in sdist_names)
+          }
+          forbidden.extend(
+              name
+              for name in sdist_names
+              if len(name.split("/")) > 1 and name.split("/")[1] in {"agents", "services"}
+          )
+          if missing_wheel or missing_sdist or forbidden:
+              raise SystemExit(
+                  f"artifact contract failed: missing wheel={sorted(missing_wheel)}, "
+                  f"missing sdist={sorted(missing_sdist)}, forbidden={forbidden}"
+              )
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish distributions
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/samsarix-agent-engine
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: python-distributions
+          path: dist/
+      - name: Publish with PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1

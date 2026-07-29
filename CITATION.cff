@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "Samsarix Agent Engine"
+type: software
+version: 0.1.0
+authors:
+  - name: "Samsarix LLC"
+contact:
+  - name: "Samsarix LLC"
+    email: "contact@samsarix.com"
+repository-code: "https://github.com/Deathcharge/helix-hub-shared"
+url: "https://www.samsarix.com"
+license: MPL-2.0

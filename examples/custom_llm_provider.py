@@ -4,9 +4,9 @@
 import asyncio
 from collections.abc import Sequence
 
-from helix_llm_agent_engine import LLMAgentEngine
-from helix_llm_agent_engine.models import ChatMessage, ProviderResponse
-from helix_llm_agent_engine.providers import BaseLLMProvider
+from samsarix_agent_engine import LLMAgentEngine
+from samsarix_agent_engine.models import ChatMessage, ProviderResponse
+from samsarix_agent_engine.providers import BaseLLMProvider
 
 
 class CustomLLMProvider(BaseLLMProvider):

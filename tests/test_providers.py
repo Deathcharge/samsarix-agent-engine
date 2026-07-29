@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from helix_llm_agent_engine import (
+from samsarix_agent_engine import (
     ChatMessage,
     ConfigurationError,
     EchoProvider,

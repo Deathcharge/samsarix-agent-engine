@@ -13,7 +13,7 @@ Evidence for this boundary:
 - The prior test suite used only mocks and exercised none of these modules.
 - No deployment manifests or complete service configuration exist here.
 
-The `src/` package configuration includes only `helix_llm_agent_engine*`, so these
+The `src/` package configuration includes only `samsarix_agent_engine*`, so these
 directories cannot enter wheels or source distributions accidentally. CI and the
 README make no runtime claim about them.
 

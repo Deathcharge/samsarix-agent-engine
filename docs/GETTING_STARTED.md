@@ -16,9 +16,9 @@ python -m pip install -e .
 ## 2. Verify the CLI without credentials
 
 ```bash
-helix-agent --version
-helix-agent run "hello"
-helix-agent run "hello" --json
+samsarix-agent --version
+samsarix-agent run "hello"
+samsarix-agent run "hello" --json
 ```
 
 Expected text output is `Echo: hello`. JSON output includes the selected provider,
@@ -42,7 +42,7 @@ successful_requests=1
 
 ```bash
 export OPENAI_API_KEY="replace-me"
-helix-agent run "hello" --provider openai --model your-model-id
+samsarix-agent run "hello" --provider openai --model your-model-id
 ```
 
 Use `--base-url` for an explicitly trusted local or third-party compatible

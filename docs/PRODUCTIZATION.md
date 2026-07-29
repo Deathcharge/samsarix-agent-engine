@@ -18,7 +18,7 @@ documentation, licensing, examples, and mock-test additions.
 
 ## Chosen product
 
-Helix LLM Agent Engine is a deliberately small Python SDK and CLI for developers
+Samsarix Agent Engine is a deliberately small Python SDK and CLI for developers
 who want named prompts, bounded in-memory sessions, and a minimal provider extension
 point over an OpenAI-compatible endpoint.
 
@@ -41,7 +41,7 @@ Primary journey:
 
 1. Create a Python 3.11+ virtual environment.
 2. Install the repository with `python -m pip install -e .`.
-3. Run `helix-agent run "installation complete"` without credentials.
+3. Run `samsarix-agent run "installation complete"` without credentials.
 4. Receive `Echo: installation complete` and exit code 0.
 5. Optionally set an API key, select a trusted base URL and model, and receive a
    normalized chat response or an actionable bounded error.
@@ -50,7 +50,7 @@ Primary journey:
 
 - Use modern `pyproject.toml` metadata and a `src/` package so tests exercise the
   installed package shape rather than accidental root imports.
-- Include only `helix_llm_agent_engine*` in distributions. Preserve but explicitly
+- Include only `samsarix_agent_engine*` in distributions. Preserve but explicitly
   exclude the legacy backend snapshot.
 - Keep one required runtime dependency (`httpx`) and avoid vendor SDK coupling.
 - Provide an abstract custom-provider seam rather than claiming broad provider
@@ -64,8 +64,10 @@ Primary journey:
 - Bound prompt size, output request size, sessions, history, per-session requests,
   orchestration fan-out, timeout, retries, backoff, redirects, and response size.
 - Do not log prompts, outputs, credentials, response bodies, or raw transport errors.
-- Block upload with `Private :: Do Not Upload` until the owner resolves legal and
-  publishing identity gates.
+- Use the portfolio-consistent MPL-2.0 license with a company notice, source-file
+  notices, separate trademark policy, and citation metadata.
+- Keep public upload gated on protected publishing identity and release CI rather
+  than on ambiguous source licensing.
 
 ## Assumptions
 
@@ -74,7 +76,8 @@ Primary journey:
 - Model and base URL are trusted developer/operator configuration. A product that
   exposes them to end users must add allowlists and egress policy.
 - Provider-reported usage is informational and may not equal billable usage.
-- The current license files cannot be safely interpreted or changed by engineering.
+- Existing grants on historical revisions remain governed by the license files
+  shipped with those revisions; the current tree is MPL-2.0.
 
 ## Baseline command results
 
@@ -119,8 +122,9 @@ changelog, security policy, `.env.example`, or coherent package tests existed.
 - [x] Add real tests, lint, formatting, type checking, coverage, build checks, and CI.
 - [x] Remove stale hard-coded provider pricing/free-credit/model claims.
 - [x] Document legacy code as non-distributed rather than implying support.
-- [ ] Resolve contradictory license terms and legal identity (owner/legal blocked).
-- [ ] Confirm the PyPI project name and Trusted Publishing identity (owner blocked).
+- [x] Resolve contradictory license terms, legal identity, and working contacts.
+- [x] Confirm the Samsarix distribution and import namespace.
+- [ ] Register the PyPI project and configure Trusted Publishing (external gate).
 
 ### P2
 
@@ -146,7 +150,7 @@ changelog, security policy, `.env.example`, or coherent package tests existed.
 ## Release acceptance criteria
 
 - Empty-environment editable install and wheel install both work.
-- `helix-agent --help`, `--version`, offline text, offline JSON, and stdin paths work.
+- `samsarix-agent --help`, `--version`, offline text, offline JSON, and stdin paths work.
 - Lint, format, strict types, tests with at least 90% branch coverage, build, metadata,
   and package-content checks pass.
 - No wheel/sdist contains `agents/` or `services/`.
@@ -164,21 +168,26 @@ changelog, security policy, `.env.example`, or coherent package tests existed.
 - Replaced `setup.py` with PEP 517/621 metadata and an explicit package allowlist.
 - Added CI and current supported Python matrix.
 - Rewrote user, contributor, security, legacy, and release documentation.
+- Migrated the unreleased package, import namespace, CLI, environment variable,
+  metadata, and policies from Helix to Samsarix branding.
+- Adopted the unmodified MPL-2.0 with Samsarix LLC ownership/contact notices,
+  trademark guidance, citation metadata, and PEP 561 typing metadata.
+- Added an environment-protected, OIDC-based PyPI release workflow with separate
+  build/publish jobs, tag/version matching, archive guards, and pinned actions.
 - Removed orphaned root LLM modules and their private imports; Git history retains
   them if portfolio archaeology is needed.
 
 ## Deferred and blocked work
 
-Owner/legal:
+External release operations:
 
-- Decide the actual license for this repository, correct the Licensed Work name,
-  change date/term, commercial-use terms, licensor identity, and conflicting
-  proprietary text. Verification: legal review approves final files and package
-  metadata names the approved license.
-- Confirm security and conduct contacts. Verification: private channels work and
-  are documented.
-- Confirm the distribution name and configure PyPI Trusted Publishing. Verification:
-  a TestPyPI or authorized PyPI release installs in an empty environment.
+- Decide whether to rename the historical GitHub repository slug before registering
+  publisher identity.
+- Register the `samsarix-agent-engine` distribution and configure protected PyPI
+  Trusted Publishing. Verification: an authorized PyPI release installs in an
+  empty environment.
+- Enable GitHub private vulnerability reporting and verify the documented support
+  and conduct mailboxes operationally.
 
 Deliberately deferred local features are the P2 list above; none is required for
 the first credible narrow release.
@@ -223,29 +232,30 @@ unsupported by current evidence.
 ## Final verification results
 
 Verification used a fresh editable-install environment at
-`%TEMP%\helix-hub-shared-verify-019faa74` and a second fresh wheel-install
-environment at `%TEMP%\helix-hub-shared-wheel-019faa74` on Python 3.11.9.
+`%TEMP%\samsarix-agent-engine-verify-7c33c82de6b94286be602e9843e6aff4\edit2`
+and a second fresh wheel-install environment under the same root on Python 3.11.9.
 
 | Command or check | Actual result |
 | --- | --- |
 | `python -m pip install -e ".[dev]"` | Exit 0 in the first fresh environment; package `0.1.0` and declared tools installed. |
 | `python -m ruff format --check src tests examples` | Exit 0; 15 files already formatted. |
 | `python -m ruff check src tests examples` | Exit 0; all checks passed. |
-| `python -m mypy src/helix_llm_agent_engine` | Exit 0; no issues in 7 source files under strict mode. |
-| `python -m pytest --cov=helix_llm_agent_engine --cov-report=term-missing` | Exit 0; 54 passed; 91.41% branch coverage; 90% gate met. |
-| `python -m bandit -r src/helix_llm_agent_engine -q` | Exit 0; no supported-package findings. |
+| `python -m mypy src/samsarix_agent_engine` | Exit 0; no issues in 7 source files under strict mode. |
+| `python -m pytest --cov=samsarix_agent_engine --cov-report=term-missing` | Exit 0; 54 passed; 91.41% branch coverage; 90% gate met. |
+| `python -m bandit -r src/samsarix_agent_engine -q` | Exit 0; no supported-package findings. |
 | `python -m pip_audit -r requirements.txt` | Exit 0; no known runtime dependency vulnerabilities found. |
 | `python -m compileall -q src tests examples` | Exit 0. |
 | `python -m pip check` | Exit 0 in both fresh environments; no broken requirements. |
 | Four scripts under `examples/` | All exited 0 with the documented echo, custom-provider, collaboration, and reset/error behavior. |
-| Module and `helix-agent` entry points | `--version`, offline JSON, stdin, and text paths exited 0; an unreachable compatible endpoint returned sanitized exit code 3. |
-| `python -m build` | Exit 0 using its declared isolated build requirement; built wheel and sdist. |
+| Module and `samsarix-agent` entry points | `--version`, offline JSON, stdin, and text paths exited 0; the earlier unreachable-endpoint check returned sanitized exit code 3. |
+| `python -m build --sdist` and `python -m build --wheel` | Exit 0 using the declared isolated build requirement; built both distributions. |
 | `python -m twine check dist/*` | Both artifacts passed. |
-| Wheel/sdist archive inspection | Neither contains `agents/` nor `services/`; wheel contains only 7 package modules, metadata, and the two existing license files. |
-| Fresh wheel installation | Exit 0; installed version, JSON invocation, stdin invocation, and `pip check` all passed outside the repository. |
-| CI YAML parse | Exit 0; jobs are `quality`, `dependency-audit`, and `package`. |
+| Wheel/sdist archive inspection | Neither contains `agents/`, `services/`, or the old import namespace; the wheel contains 7 modules, `py.typed`, metadata, and 4 licensing/notice files. The sdist also contains policies, docs, examples, and citation metadata. |
+| Fresh wheel installation | Exit 0; import, renamed base exception, module/CLI version, text/JSON invocation, `py.typed`, licensing files, and `pip check` all passed outside the repository. |
+| Citation and license metadata | `CITATION.cff` parsed as YAML; wheel metadata reports Samsarix LLC contacts and `License-Expression: MPL-2.0`; the license SHA-256 matches the portfolio's unmodified MPL-2.0 copy. |
+| Workflow YAML parse | Exit 0; CI jobs are `quality`, `dependency-audit`, and `package`; release jobs are `build` and `publish`. |
 | `git diff --check` | Exit 0. |
-| Security contract finalizer and validator | Exit 0; 192-file worktree snapshot, complete declared coverage, 0 surviving reportable supported-surface findings, valid report/SARIF contract. |
+| Prior full security contract | The contract bound to `dddf4f4` remains valid with 0 supported-surface findings; this branding/package diff separately passed strict tests, Bandit, dependency audit, archive inspection, and manual diff review. |
 
 The exploratory `python -m build --no-isolation` failed because the first virtual
 environment's preinstalled `setuptools` was older than the declared
@@ -254,7 +264,7 @@ normal isolated `python -m build` installed the declared backend and passed.
 
 Not run locally: GitHub-hosted Actions, Python 3.12–3.14 matrix jobs, a live paid
 provider call, PyPI Trusted Publishing, signing, or a public upload. Those require
-external runners, credentials, owner authorization, or closure of the legal gates.
+external runners, credentials, owner authorization, or closure of publishing gates.
 All protocol tests use deterministic local HTTP transports.
 
 ## Adversarial final review
@@ -265,7 +275,10 @@ and source/document drift checks. It found and fixed three issues before accepta
 unbounded custom-provider output retention, unsanitized provider request IDs/text
 terminal controls, and a CLI stdin-limit path that could escape clean error mapping.
 Provider replacement cleanup is now retained, idempotent, exhaustive, and sanitized;
-CI actions are commit-pinned and both archive formats are guarded.
+CI actions are commit-pinned and both archive formats are guarded. The branding pass
+also caught and fixed two release-metadata defects before acceptance: setuptools
+rejects `mailto:` project URLs, and PEP 639 license expressions cannot be combined
+with the superseded license classifier.
 
 The security scan statically inventoried retained legacy code and manually assessed
 its Python execution, subprocess, path, and weak-digest candidates. None is reachable
@@ -277,8 +290,8 @@ canonical application before reuse.
 
 **Release candidate with named external gates.** The narrow SDK/CLI is independently
 installable and its release-candidate journey passes locally with no actionable P0
-or supported-surface P1 remaining. Public upload is a no-go until the owner/legal
-license decision, distribution-name approval, verified security/conduct contacts,
-and protected PyPI Trusted Publishing identity are documented and reviewed. GitHub
-CI must pass on the release commit before tagging. Version `0.1.0` remains alpha and
-unreleased until those gates close.
+or supported-surface P1 remaining. The Samsarix identity, MPL-2.0 license, and
+working contact addresses are documented. Public upload is a no-go until repository
+naming is finalized, the PyPI project and protected Trusted Publishing identity are
+configured, and GitHub CI passes on the release commit. Version `0.1.0` remains
+alpha and unreleased until those gates close.

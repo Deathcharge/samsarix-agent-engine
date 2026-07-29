@@ -1,3 +1,7 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 """Stateful agent and orchestration primitives."""
 
 from __future__ import annotations
@@ -11,9 +15,9 @@ from time import perf_counter
 from .errors import (
     BudgetExceededError,
     ConfigurationError,
-    HelixAgentError,
     InputValidationError,
     ProviderError,
+    SamsarixAgentError,
 )
 from .models import AgentMetrics, ChatMessage, ProviderResponse
 from .providers import BaseLLMProvider, EchoProvider
@@ -90,7 +94,7 @@ class Agent:
             except asyncio.CancelledError:
                 self._metrics.failures += 1
                 raise
-            except HelixAgentError:
+            except SamsarixAgentError:
                 self._metrics.failures += 1
                 raise
             except Exception as exc:
