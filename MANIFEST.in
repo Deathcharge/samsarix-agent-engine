@@ -1,0 +1,11 @@
+include CHANGELOG.md
+include CITATION.cff
+include CODE_OF_CONDUCT.md
+include CONTRIBUTING.md
+include LICENSING.md
+include SECURITY.md
+include .env.example
+recursive-include docs *.md
+recursive-include examples *.py
+prune agents
+prune services

@@ -1,43 +1,27 @@
 #!/usr/bin/env python3
-"""
-Basic Agent Example - Simple agent creation and invocation
-"""
+"""Run a real agent journey without credentials or network access."""
 
 import asyncio
-import os
-from helix_llm_agent_engine import LLMAgentEngine
+
+from samsarix_agent_engine import LLMAgentEngine
 
 
 async def main():
-    """Create and invoke a basic agent"""
-    
-    # Initialize the LLM Agent Engine
-    engine = LLMAgentEngine(
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
-        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-    )
-    
-    # Create an agent
+    """Create an offline agent, invoke it, and inspect the recorded turn."""
+
+    engine = LLMAgentEngine()
     agent = engine.create_agent(
-        name="Philosopher",
-        model="gpt-4",
-        system_prompt="You are a wise philosopher who provides thoughtful insights.",
+        name="setup_check",
+        model="echo",
+        system_prompt="Verify that the local package works.",
     )
-    
-    # Invoke the agent with a prompt
-    print("🤔 Invoking Philosopher agent...")
-    response = await agent.invoke(
-        "What is the nature of consciousness?"
-    )
-    
-    print(f"\n📝 Response:\n{response}\n")
-    
-    # Check agent metrics
-    metrics = agent.get_metrics()
-    print(f"📊 Agent Metrics:")
-    print(f"  - Tokens Used: {metrics.get('tokens_used', 'N/A')}")
-    print(f"  - Latency: {metrics.get('latency_ms', 'N/A')}ms")
-    print(f"  - Success: {metrics.get('success', 'N/A')}")
+
+    response = await agent.invoke("installation complete", session_id="demo")
+    print(response)
+    print(f"history_messages={len(agent.history('demo'))}")
+    print(f"successful_requests={agent.get_metrics()['successes']}")
+
+    await engine.close()
 
 
 if __name__ == "__main__":

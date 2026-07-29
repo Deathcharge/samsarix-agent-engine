@@ -29,7 +29,9 @@ Unacceptable behaviors include:
 
 ## Reporting
 
-If you experience or witness unacceptable behavior, please report it by contacting the project maintainers at [conduct@helix-hub-shared.dev](mailto:conduct@helix-hub-shared.dev).
+If you experience or witness unacceptable behavior, email contact@samsarix.com
+with `[CONDUCT]` in the subject. Do not include sensitive conduct reports in a
+public issue.
 
 All reports will be reviewed and investigated promptly. The project team is committed to maintaining confidentiality with regard to the reporter of an incident.
 
@@ -53,4 +55,4 @@ This Code of Conduct is adapted from the Contributor Covenant, version 2.0, avai
 
 ## Questions?
 
-If you have questions about this Code of Conduct, please open an issue or contact the maintainers.
+If you have questions about this Code of Conduct, email contact@samsarix.com.

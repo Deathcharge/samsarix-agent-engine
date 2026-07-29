@@ -1,107 +1,67 @@
-# Getting Started with Helix LLM Agent Engine
+# Getting started
 
-## Installation
+This guide exercises the complete supported path: install the package, run an
+offline agent, inspect session state, then optionally configure a network model.
 
-### From PyPI (Coming Soon)
-```bash
-pip install helix-llm-agent-engine
-```
-
-### From Source
-```bash
-git clone https://github.com/Deathcharge/helix-llm-agent-engine.git
-cd helix-llm-agent-engine
-pip install -e .
-```
-
-## Configuration
-
-### 1. Set Environment Variables
+## 1. Create an isolated environment
 
 ```bash
-# OpenAI
-export OPENAI_API_KEY="sk-..."
-
-# Anthropic
-export ANTHROPIC_API_KEY="sk-ant-..."
-
-# Optional: Grok (xAI)
-export XAI_API_KEY="..."
+python -m venv .venv
+# macOS/Linux: source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e .
 ```
 
-### 2. Create Config File (Optional)
+## 2. Verify the CLI without credentials
 
-```yaml
-# config.yaml
-llm_gateway:
-  default_provider: openai
-  fallback_providers:
-    - anthropic
-  timeout: 30
-  max_retries: 3
-
-agents:
-  consciousness_tracking: true
-  memory_size: 10000
+```bash
+samsarix-agent --version
+samsarix-agent run "hello"
+samsarix-agent run "hello" --json
 ```
 
-## Your First Agent
+Expected text output is `Echo: hello`. JSON output includes the selected provider,
+model, and local metrics. Echo mode never makes a network request.
 
-```python
-import asyncio
-from helix_llm_agent_engine import LLMAgentEngine
+## 3. Verify the Python journey
 
-async def main():
-    # Initialize engine
-    engine = LLMAgentEngine()
-    
-    # Create an agent
-    agent = engine.create_agent(
-        name="Assistant",
-        model="gpt-4",
-        system_prompt="You are a helpful AI assistant.",
-    )
-    
-    # Invoke agent
-    response = await agent.invoke("Hello! What can you do?")
-    print(f"Agent: {response}")
-
-if __name__ == "__main__":
-    asyncio.run(main())
+```bash
+python examples/basic_agent.py
 ```
 
-## Multi-Agent Collaboration
+Expected output:
 
-```python
-import asyncio
-from helix_llm_agent_engine import LLMAgentEngine, AgentOrchestrator
-
-async def main():
-    engine = LLMAgentEngine()
-    orchestrator = AgentOrchestrator()
-    
-    # Create multiple agents
-    sage = engine.create_agent("Sage", model="gpt-4")
-    architect = engine.create_agent("Architect", model="claude-3-opus")
-    
-    orchestrator.add_agent(sage)
-    orchestrator.add_agent(architect)
-    
-    # Run collective loop
-    result = await orchestrator.collective_loop(
-        prompt="Design a consciousness framework",
-        max_iterations=3,
-    )
-    
-    print(f"Result: {result}")
-
-if __name__ == "__main__":
-    asyncio.run(main())
+```text
+Echo: installation complete
+history_messages=2
+successful_requests=1
 ```
 
-## Next Steps
+## 4. Use a compatible endpoint (optional)
 
-- Check out `/examples` for more examples
-- Read the [API Documentation](./API.md)
-- Explore [Agent Profiles](./AGENT_PROFILES.md)
-- Learn about [Consciousness Metrics](./CONSCIOUSNESS.md)
+```bash
+export OPENAI_API_KEY="replace-me"
+samsarix-agent run "hello" --provider openai --model your-model-id
+```
+
+Use `--base-url` for an explicitly trusted local or third-party compatible
+endpoint. The configured base URL is extended with `/chat/completions` unless it
+already ends with that path.
+
+The CLI never accepts an API key value as an argument. Change the environment
+variable name with `--api-key-env` when needed.
+
+## 5. Handle ordinary failures
+
+- Empty and oversized prompts fail before a provider call.
+- A missing model or required OpenAI credential exits with status `2`.
+- Timeouts, connection failures, malformed responses, and HTTP errors exit with
+  status `3`.
+- Retryable failures use a bounded exponential delay and at most five configured
+  retries.
+- Exceeding a session request budget raises `BudgetExceededError`; call
+  `agent.clear_history(session_id)` only when an explicit reset is appropriate.
+
+See `examples/custom_llm_provider.py`, `examples/error_handling.py`, and
+`examples/multi_agent_collaboration.py` for additional runnable behavior.

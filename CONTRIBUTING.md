@@ -1,108 +1,59 @@
-# Contributing to Helix Hub Shared
+# Contributing
 
-We welcome contributions to the Helix Hub Shared infrastructure! This guide explains how to get started.
+Contributions should keep the supported product small, independently installable,
+and free of runtime dependencies on private Samsarix repositories.
 
-## Getting Started
-
-1. Fork the repository
-2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/helix-hub-shared.git`
-3. Create a branch: `git checkout -b feature/your-feature`
-4. Make changes and commit: `git commit -am 'Add feature'`
-5. Push to branch: `git push origin feature/your-feature`
-6. Submit a pull request
-
-## Development Setup
+## Setup
 
 ```bash
 git clone https://github.com/Deathcharge/helix-hub-shared.git
 cd helix-hub-shared
-pip install -e ".[dev]"
-pip install -r requirements-test.txt
+python -m venv .venv
+# macOS/Linux: source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
 ```
 
-## Running Tests
+## Required checks
 
 ```bash
-pytest tests/ -v
-pytest tests/ --cov
-pytest tests/ -m engine  # Run specific marker
-pytest tests/ -m integration  # Run integration tests
+python -m ruff check src tests examples
+python -m ruff format --check src tests examples
+python -m mypy src/samsarix_agent_engine
+python -m bandit -r src/samsarix_agent_engine -q
+python -m pip_audit -r requirements.txt
+python -m pytest --cov=samsarix_agent_engine --cov-report=term-missing
+python -m build
+python -m twine check dist/*
 ```
 
-## Coding Standards
+Add tests that exercise implementation, not mocks of the object under test. Network
+tests must use deterministic local transports or fixtures and must not require paid
+credentials.
 
-- Follow PEP 8
-- Use type hints
-- Write comprehensive docstrings
-- Keep lines under 100 characters
-- Use meaningful variable names
-- Add tests for new features (minimum 80% coverage)
+## Scope
 
-## Documentation
+- `src/samsarix_agent_engine/` is the supported product.
+- `tests/` and `examples/` must match the installed public API.
+- `agents/` and `services/` are legacy extracts. Do not expand or restore their
+  private-repository coupling. Changes there need a separately justified owner
+  decision and must not enter the distribution accidentally.
+- Do not add a provider SDK to the required dependency set when a custom provider
+  adapter can keep it optional.
+- Do not add telemetry, hosted infrastructure, billing, or persistence without a
+  concrete product requirement and privacy/security design.
 
-Update documentation for new features:
+## Pull requests
 
-- Update README.md for major changes
-- Update GETTING_STARTED.md for new patterns
-- Add examples for new features
-- Update API documentation
-- Add inline code comments for complex logic
+Keep changes focused, update user documentation and `CHANGELOG.md` for observable
+behavior, state any compatibility impact, and include exact verification commands.
+Use conventional commit prefixes such as `feat:`, `fix:`, `docs:`, and `test:` when
+helpful; no specific commit-message format is enforced by tooling.
 
-## Pull Request Process
+Follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Report vulnerabilities using
+[SECURITY.md](SECURITY.md), not a public issue containing exploit details.
 
-1. Ensure all tests pass: `pytest tests/`
-2. Add tests for new functionality
-3. Update documentation as needed
-4. Provide a clear description of changes
-5. Reference any related issues
-6. Wait for review and feedback
-
-## Code Review Guidelines
-
-- Be respectful and constructive
-- Focus on the code, not the person
-- Suggest improvements, don't demand
-- Acknowledge good work
-- Help reviewees improve
-
-## Testing Requirements
-
-- Minimum 80% code coverage
-- All tests must pass
-- Add tests for edge cases
-- Test error conditions
-- Include integration tests
-
-## Commit Message Format
-
-```
-<type>: <subject>
-
-<body>
-
-<footer>
-```
-
-Types: feat, fix, docs, style, refactor, test, chore
-
-Example:
-```
-feat: Add agent communication logging
-
-- Implement message logging for all agent communications
-- Add history retrieval functionality
-- Add tests for logging functionality
-
-Fixes #123
-```
-
-## Questions?
-
-- Open an issue for questions
-- Check existing documentation
-- Review past pull requests
-- Contact maintainers
-
-## Code of Conduct
-
-Please follow our [Code of Conduct](CODE_OF_CONDUCT.md).
+Unless stated otherwise before acceptance, contributions are submitted under
+MPL-2.0, the project's license. Contributors retain copyright in their work; see
+[LICENSING.md](LICENSING.md) for the ownership and contribution model.
