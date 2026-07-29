@@ -230,7 +230,7 @@ tar -xzf helix_unified_repo.tar.gz -C /path/to/restore/
 # Reinitialize git
 cd /path/to/restore/
 git init
-git remote add origin https://github.com/Deathcharge/helix-unified.git
+git remote add origin https://github.com/Deathcharge/samsarix-unified.git
 
 # Restore to previous commit
 git fetch origin
@@ -288,7 +288,7 @@ python -c "from apps.backend.integrations.notion_sync_daemon import NotionSyncDa
 
 ## 📋 CRITICAL URLS TO PRESERVE
 
-**GitHub Repository**: https://github.com/Deathcharge/helix-unified
+**GitHub Repository**: https://github.com/Deathcharge/samsarix-unified
 **Railway Backend**: https://helix-unified-production.up.railway.app
 **Zapier Dashboard**: https://helix-coordination-dashboard.zapier.app
 **Context Vault**: Navigate to page 16 in Streamlit dashboard
