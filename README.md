@@ -177,8 +177,8 @@ Read [SECURITY.md](SECURITY.md) for trust boundaries and reporting guidance.
   Anthropic support, token estimation, or automatic fallback.
 - The repository contains historical backend extracts that depend on private
   `helix-unified` modules and are not part of this product.
-- The GitHub repository still uses its historical `helix-hub-shared` slug; the
-  published distribution and import namespace use Samsarix branding.
+- The GitHub repository, distribution, and import namespace use Samsarix branding.
+  GitHub redirects the historical `helix-hub-shared` repository URL for compatibility.
 
 ## Contributing and licensing
 
