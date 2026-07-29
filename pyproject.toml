@@ -43,8 +43,8 @@ samsarix-agent = "samsarix_agent_engine.cli:main"
 
 [project.urls]
 Homepage = "https://www.samsarix.com"
-Repository = "https://github.com/Deathcharge/helix-hub-shared"
-Issues = "https://github.com/Deathcharge/helix-hub-shared/issues"
+Repository = "https://github.com/Deathcharge/samsarix-agent-engine"
+Issues = "https://github.com/Deathcharge/samsarix-agent-engine/issues"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

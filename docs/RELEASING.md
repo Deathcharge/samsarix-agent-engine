@@ -1,14 +1,13 @@
 # Release checklist
 
-The source, package metadata, and contacts are release-ready, but public upload is
-still gated on repository naming, protected publishing identity, and CI.
+The source, package metadata, repository identity, and contacts are aligned, but
+public upload is still gated on protected publishing identity and CI.
 
 ## Owner gates
 
-1. Decide whether to rename the GitHub repository from its historical
-   `helix-hub-shared` slug to `samsarix-agent-engine`. Make that decision before
-   configuring publisher identity so project URLs and trusted-publisher claims
-   stay aligned.
+1. The GitHub repository was renamed to `samsarix-agent-engine` on 2026-07-29.
+   Configure publisher identity against that exact owner/repository so project
+   URLs and trusted-publisher claims stay aligned.
 2. Recheck and register the `samsarix-agent-engine` PyPI distribution. PyPI returned
    404 for that name on 2026-07-28, but a 404 is not a reservation.
 3. Create a GitHub environment named

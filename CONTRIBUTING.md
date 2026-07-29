@@ -6,8 +6,8 @@ and free of runtime dependencies on private Samsarix repositories.
 ## Setup
 
 ```bash
-git clone https://github.com/Deathcharge/helix-hub-shared.git
-cd helix-hub-shared
+git clone https://github.com/Deathcharge/samsarix-agent-engine.git
+cd samsarix-agent-engine
 python -m venv .venv
 # macOS/Linux: source .venv/bin/activate
 # Windows PowerShell: .venv\Scripts\Activate.ps1

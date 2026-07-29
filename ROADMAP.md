@@ -5,9 +5,11 @@ This roadmap separates four gates: merge, release, publication, and flagship ado
 ## Product boundary
 
 Portfolio role: **reusable library or sdk**. Keep this as a small, independently versioned package. Samsarix Unified should consume it only through a public API adapter; private monorepo imports and copied implementations are out of scope.
-Planned repository identity: `Deathcharge/samsarix-agent-engine` (hold-consolidation).
+Repository identity: `Deathcharge/samsarix-agent-engine` (renamed 2026-07-29;
+consolidation candidate).
 
-Current disposition: Merge the truthful productization state, then consolidate deliberately.
+Current disposition: Keep the productized default stable while testing whether this
+bounded runtime earns a canonical role before any consolidation or publication.
 
 ## Stabilize the productized default
 
