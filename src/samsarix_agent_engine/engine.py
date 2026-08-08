@@ -9,8 +9,9 @@ from __future__ import annotations
 import asyncio
 import re
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from time import perf_counter
+from typing import TypeVar
 
 from .errors import (
     BudgetExceededError,
@@ -18,11 +19,20 @@ from .errors import (
     InputValidationError,
     ProviderError,
     SamsarixAgentError,
+    StructuredOutputError,
 )
-from .models import AgentMetrics, ChatMessage, ProviderResponse
+from .models import (
+    AgentMetrics,
+    ChatMessage,
+    JsonValue,
+    ProviderResponse,
+    ProviderStreamChunk,
+    parse_json_output,
+)
 from .providers import BaseLLMProvider, EchoProvider
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_StructuredT = TypeVar("_StructuredT")
 
 
 class Agent:
@@ -68,17 +78,126 @@ class Agent:
         Create separate agents when independent concurrent calls are required.
         """
 
+        return await self._invoke_validated(
+            prompt,
+            session_id=session_id,
+            validator=lambda content: content,
+        )
+
+    async def invoke_json(
+        self,
+        prompt: str,
+        *,
+        session_id: str = "default",
+        max_depth: int = 64,
+    ) -> JsonValue:
+        """Invoke once and return strict JSON without committing invalid output."""
+
+        max_depth = self._validate_json_depth(max_depth)
+
+        return await self._invoke_validated(
+            prompt,
+            session_id=session_id,
+            validator=lambda content: parse_json_output(content, max_depth=max_depth),
+        )
+
+    async def invoke_structured(
+        self,
+        prompt: str,
+        validator: Callable[[JsonValue], _StructuredT],
+        *,
+        session_id: str = "default",
+        max_depth: int = 64,
+    ) -> _StructuredT:
+        """Return caller-validated JSON, compatible with dataclasses or Pydantic.
+
+        The validator is synchronous and receives already parsed strict JSON.
+        Its exceptions are sanitized so model content or application internals do
+        not leak through the public error contract.
+        """
+
+        if not callable(validator):
+            raise InputValidationError("validator must be callable")
+        max_depth = self._validate_json_depth(max_depth)
+
+        def validate(content: str) -> _StructuredT:
+            parsed = parse_json_output(content, max_depth=max_depth)
+            try:
+                return validator(parsed)
+            except Exception as exc:
+                raise StructuredOutputError("structured output validation failed") from exc
+
+        return await self._invoke_validated(prompt, session_id=session_id, validator=validate)
+
+    async def stream(
+        self,
+        prompt: str,
+        *,
+        session_id: str = "default",
+    ) -> AsyncIterator[str]:
+        """Yield bounded response deltas and commit history only after completion."""
+
         prompt = self._validate_prompt(prompt)
         session_id = self._validate_session_id(session_id)
         async with self._lock:
-            self._ensure_session(session_id)
-            request_count = self._request_counts[session_id]
-            if request_count >= self._max_requests_per_session:
-                raise BudgetExceededError(
-                    f"session {session_id!r} reached its request limit; clear it before retrying"
-                )
-            self._request_counts[session_id] = request_count + 1
-            self._metrics.requests += 1
+            self._begin_request(session_id)
+            messages = self._build_messages(session_id, prompt)
+            started = perf_counter()
+            parts: list[str] = []
+            character_count = 0
+            final_seen = False
+            try:
+                async for chunk in self._provider.stream(
+                    messages,
+                    self.model,
+                    max_tokens=self._max_output_tokens,
+                    temperature=self._temperature,
+                ):
+                    if not isinstance(chunk, ProviderStreamChunk):
+                        raise ProviderError("custom provider emitted an invalid stream event")
+                    if final_seen:
+                        raise ProviderError("provider emitted data after the final stream event")
+                    if chunk.delta:
+                        character_count += len(chunk.delta)
+                        if character_count > self._max_response_chars:
+                            raise ProviderError(
+                                "provider response exceeded the configured character limit"
+                            )
+                        parts.append(chunk.delta)
+                        yield chunk.delta
+                    if chunk.final:
+                        final_seen = True
+                        self._metrics.input_tokens += chunk.input_tokens or 0
+                        self._metrics.output_tokens += chunk.output_tokens or 0
+                if not final_seen:
+                    raise ProviderError("provider stream ended without a final event")
+                content = "".join(parts)
+                if not content:
+                    raise ProviderError("provider stream contained no text content")
+                self._record_success(session_id, prompt, content)
+            except (asyncio.CancelledError, GeneratorExit):
+                self._metrics.failures += 1
+                raise
+            except SamsarixAgentError:
+                self._metrics.failures += 1
+                raise
+            except Exception as exc:
+                self._metrics.failures += 1
+                raise ProviderError("custom provider streaming failed") from exc
+            finally:
+                self._metrics.last_latency_ms = round((perf_counter() - started) * 1_000, 3)
+
+    async def _invoke_validated(
+        self,
+        prompt: str,
+        *,
+        session_id: str,
+        validator: Callable[[str], _StructuredT],
+    ) -> _StructuredT:
+        prompt = self._validate_prompt(prompt)
+        session_id = self._validate_session_id(session_id)
+        async with self._lock:
+            self._begin_request(session_id)
             messages = self._build_messages(session_id, prompt)
             started = perf_counter()
             try:
@@ -91,6 +210,9 @@ class Agent:
                 response = self._normalize_provider_response(raw_response)
                 if len(response.content) > self._max_response_chars:
                     raise ProviderError("provider response exceeded the configured character limit")
+                self._metrics.input_tokens += response.input_tokens or 0
+                self._metrics.output_tokens += response.output_tokens or 0
+                result = validator(response.content)
             except asyncio.CancelledError:
                 self._metrics.failures += 1
                 raise
@@ -103,20 +225,31 @@ class Agent:
             finally:
                 self._metrics.last_latency_ms = round((perf_counter() - started) * 1_000, 3)
 
-            history = self._history[session_id]
-            history.extend(
-                [
-                    ChatMessage(role="user", content=prompt),
-                    ChatMessage(role="assistant", content=response.content),
-                ]
+            self._record_success(session_id, prompt, response.content)
+            return result
+
+    def _begin_request(self, session_id: str) -> None:
+        self._ensure_session(session_id)
+        request_count = self._request_counts[session_id]
+        if request_count >= self._max_requests_per_session:
+            raise BudgetExceededError(
+                f"session {session_id!r} reached its request limit; clear it before retrying"
             )
-            if len(history) > self._max_history_messages:
-                del history[: len(history) - self._max_history_messages]
-            self._history.move_to_end(session_id)
-            self._metrics.successes += 1
-            self._metrics.input_tokens += response.input_tokens or 0
-            self._metrics.output_tokens += response.output_tokens or 0
-            return response.content
+        self._request_counts[session_id] = request_count + 1
+        self._metrics.requests += 1
+
+    def _record_success(self, session_id: str, prompt: str, content: str) -> None:
+        history = self._history[session_id]
+        history.extend(
+            [
+                ChatMessage(role="user", content=prompt),
+                ChatMessage(role="assistant", content=content),
+            ]
+        )
+        if len(history) > self._max_history_messages:
+            del history[: len(history) - self._max_history_messages]
+        self._history.move_to_end(session_id)
+        self._metrics.successes += 1
 
     def history(self, session_id: str = "default") -> tuple[ChatMessage, ...]:
         """Return an immutable snapshot of one session's successful turns."""
@@ -182,6 +315,16 @@ class Agent:
         if any(ord(character) < 32 for character in session_id):
             raise InputValidationError("session_id must not contain control characters")
         return session_id
+
+    @staticmethod
+    def _validate_json_depth(max_depth: int) -> int:
+        if (
+            isinstance(max_depth, bool)
+            or not isinstance(max_depth, int)
+            or not 1 <= max_depth <= 256
+        ):
+            raise InputValidationError("max_depth must be an integer between 1 and 256")
+        return max_depth
 
 
 class LLMAgentEngine:

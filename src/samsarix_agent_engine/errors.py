@@ -34,3 +34,7 @@ class ProviderError(SamsarixAgentError):
         super().__init__(message)
         self.status_code = status_code
         self.retryable = retryable
+
+
+class StructuredOutputError(ProviderError):
+    """Raised when a provider response cannot satisfy a structured-output contract."""

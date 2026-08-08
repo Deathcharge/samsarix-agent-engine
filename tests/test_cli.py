@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 
 import pytest
 
@@ -21,6 +22,36 @@ def test_cli_json_output_is_machine_readable(capsys: pytest.CaptureFixture[str])
     assert result["metrics"]["requests"] == 1
 
 
+def test_cli_streams_without_printing_the_result_twice(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["run", "hello", "--stream"]) == 0
+    assert capsys.readouterr().out == "Echo: hello\n"
+
+
+def test_cli_emits_only_the_expected_json_value(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def structured(_: object) -> dict[str, object]:
+        return {
+            "content": {"priority": 2, "queue": "billing"},
+            "provider": "test",
+            "model": "test",
+            "metrics": {},
+        }
+
+    monkeypatch.setattr(cli, "_run", structured)
+    assert cli.main(["run", "hello", "--expect-json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"priority": 2, "queue": "billing"}
+
+
+def test_cli_output_modes_are_mutually_exclusive() -> None:
+    with pytest.raises(SystemExit) as captured:
+        cli.main(["run", "hello", "--stream", "--json"])
+    assert captured.value.code == 2
+
+
 def test_cli_text_output_neutralizes_terminal_controls(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -32,7 +63,7 @@ def test_cli_reads_bounded_stdin(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     stdin = io.StringIO("from stdin")
-    monkeypatch.setattr(cli.sys, "stdin", stdin)
+    monkeypatch.setattr(sys, "stdin", stdin)
     assert cli.main(["run"]) == 0
     assert capsys.readouterr().out == "Echo: from stdin\n"
 
@@ -40,7 +71,7 @@ def test_cli_reads_bounded_stdin(
 def test_cli_maps_invalid_stdin_limit_without_traceback(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("input"))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("input"))
     assert cli.main(["run", "--max-input-chars", "-1"]) == 2
     assert "max_input_chars" in capsys.readouterr().err
 

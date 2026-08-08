@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Sequence
+from typing import cast
 
 import pytest
 
@@ -11,9 +13,12 @@ from samsarix_agent_engine import (
     ChatMessage,
     ConfigurationError,
     InputValidationError,
+    JsonValue,
     LLMAgentEngine,
     ProviderError,
     ProviderResponse,
+    ProviderStreamChunk,
+    StructuredOutputError,
 )
 
 
@@ -25,7 +30,7 @@ class RecordingProvider(BaseLLMProvider):
 
     async def invoke(
         self,
-        messages: list[ChatMessage] | tuple[ChatMessage, ...],
+        messages: Sequence[ChatMessage],
         model: str,
         *,
         max_tokens: int,
@@ -49,7 +54,7 @@ class FailingProvider(BaseLLMProvider):
 
     async def invoke(
         self,
-        messages: list[ChatMessage] | tuple[ChatMessage, ...],
+        messages: Sequence[ChatMessage],
         model: str,
         *,
         max_tokens: int,
@@ -64,6 +69,43 @@ class FailingProvider(BaseLLMProvider):
 class FailingCloseProvider(RecordingProvider):
     async def close(self) -> None:
         raise RuntimeError("secret-bearing cleanup failure")
+
+
+class StreamingProvider(BaseLLMProvider):
+    def __init__(
+        self,
+        chunks: tuple[ProviderStreamChunk | object, ...] | None = None,
+    ) -> None:
+        self.chunks = chunks or (
+            ProviderStreamChunk(delta="hel"),
+            ProviderStreamChunk(delta="lo"),
+            ProviderStreamChunk(final=True, input_tokens=3, output_tokens=2),
+        )
+        self.calls = 0
+
+    async def invoke(
+        self,
+        messages: Sequence[ChatMessage],
+        model: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> ProviderResponse:
+        del messages, model, max_tokens, temperature
+        raise AssertionError("native streaming should not call invoke")
+
+    async def stream(
+        self,
+        messages: Sequence[ChatMessage],
+        model: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> AsyncIterator[ProviderStreamChunk]:
+        del messages, model, max_tokens, temperature
+        self.calls += 1
+        for chunk in self.chunks:
+            yield cast(ProviderStreamChunk, chunk)
 
 
 @pytest.mark.asyncio
@@ -98,6 +140,154 @@ async def test_agent_invocation_tracks_real_history_and_metrics() -> None:
         "last_latency_ms": pytest.approx(agent.get_metrics()["last_latency_ms"]),
     }
     assert len(agent.history("thread-1")) == 4
+
+
+@pytest.mark.asyncio
+async def test_agent_streams_deltas_then_commits_history_and_usage() -> None:
+    provider = StreamingProvider()
+    engine = LLMAgentEngine()
+    engine.register_provider("streaming", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="streaming")
+
+    chunks = [chunk async for chunk in agent.stream("Hello", session_id="thread-1")]
+
+    assert chunks == ["hel", "lo"]
+    assert [message.content for message in agent.history("thread-1")] == ["Hello", "hello"]
+    assert agent.get_metrics() | {"last_latency_ms": None} == {
+        "requests": 1,
+        "successes": 1,
+        "failures": 0,
+        "input_tokens": 3,
+        "output_tokens": 2,
+        "last_latency_ms": None,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chunks", "message"),
+    [
+        ((ProviderStreamChunk(delta="unfinished"),), "final event"),
+        ((object(),), "invalid stream event"),
+        (
+            (
+                ProviderStreamChunk(delta="done"),
+                ProviderStreamChunk(final=True),
+                ProviderStreamChunk(delta="late"),
+            ),
+            "after the final",
+        ),
+    ],
+)
+async def test_agent_rejects_invalid_streams_without_committing_history(
+    chunks: tuple[ProviderStreamChunk | object, ...],
+    message: str,
+) -> None:
+    provider = StreamingProvider(chunks)
+    engine = LLMAgentEngine()
+    engine.register_provider("streaming", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="streaming")
+
+    with pytest.raises(ProviderError, match=message):
+        _ = [chunk async for chunk in agent.stream("Hello")]
+
+    assert agent.history() == ()
+    assert agent.get_metrics()["failures"] == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_rejects_stream_over_character_limit() -> None:
+    provider = StreamingProvider(
+        (
+            ProviderStreamChunk(delta="too"),
+            ProviderStreamChunk(delta=" long"),
+            ProviderStreamChunk(final=True),
+        )
+    )
+    engine = LLMAgentEngine(max_response_chars=3)
+    engine.register_provider("streaming", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="streaming")
+
+    with pytest.raises(ProviderError, match="character limit"):
+        _ = [chunk async for chunk in agent.stream("Hello")]
+    assert agent.history() == ()
+
+
+@pytest.mark.asyncio
+async def test_agent_parses_and_validates_structured_output() -> None:
+    provider = RecordingProvider('{"priority": 2, "queue": "billing"}')
+    engine = LLMAgentEngine()
+    engine.register_provider("recording", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="recording")
+
+    assert await agent.invoke_json("Classify") == {"priority": 2, "queue": "billing"}
+    agent.clear_history()
+
+    def priority(value: JsonValue) -> int:
+        if not isinstance(value, dict):
+            raise ValueError("expected an object")
+        result = value.get("priority")
+        if isinstance(result, bool) or not isinstance(result, int):
+            raise ValueError("expected an integer priority")
+        return result
+
+    assert (
+        await agent.invoke_structured(
+            "Classify",
+            priority,
+        )
+        == 2
+    )
+    assert len(agent.history()) == 2
+
+
+@pytest.mark.asyncio
+async def test_invalid_structured_output_is_counted_but_not_committed() -> None:
+    provider = RecordingProvider('{"priority": NaN}')
+    engine = LLMAgentEngine()
+    engine.register_provider("recording", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="recording")
+
+    with pytest.raises(StructuredOutputError, match="non-finite"):
+        await agent.invoke_json("Classify")
+
+    assert agent.history() == ()
+    assert agent.get_metrics() | {"last_latency_ms": None} == {
+        "requests": 1,
+        "successes": 0,
+        "failures": 1,
+        "input_tokens": 4,
+        "output_tokens": 2,
+        "last_latency_ms": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_structured_validator_errors_are_sanitized() -> None:
+    provider = RecordingProvider('{"priority": 2}')
+    engine = LLMAgentEngine()
+    engine.register_provider("recording", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="recording")
+
+    def reject(_: object) -> object:
+        raise RuntimeError("secret-bearing validator failure")
+
+    with pytest.raises(StructuredOutputError, match="validation failed") as captured:
+        await agent.invoke_structured("Classify", reject)
+    assert "secret-bearing" not in str(captured.value)
+    assert agent.history() == ()
+
+
+@pytest.mark.asyncio
+async def test_structured_depth_is_validated_before_provider_call() -> None:
+    provider = RecordingProvider("null")
+    engine = LLMAgentEngine()
+    engine.register_provider("recording", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="recording")
+
+    with pytest.raises(InputValidationError, match="max_depth"):
+        await agent.invoke_json("Classify", max_depth=0)
+    assert provider.calls == []
 
 
 @pytest.mark.asyncio

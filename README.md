@@ -16,6 +16,10 @@ CI verification. See [Productization](docs/PRODUCTIZATION.md).
 - Enforces input, response, history, session, output-token, retry, and request-count limits.
 - Calls one OpenAI-compatible `chat/completions` endpoint with bounded retries,
   timeouts, response size, and no redirect following.
+- Streams bounded text deltas from compatible SSE endpoints, with an invocation
+  fallback for existing custom providers.
+- Parses strict JSON and supports caller-defined structured-output validation
+  without requiring Pydantic or another runtime dependency.
 - Supports custom providers through a four-argument async interface.
 - Includes an explicit deterministic `EchoProvider` so setup can be evaluated
   without credentials, network access, or API cost.
@@ -69,10 +73,54 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+Stream a response while retaining history only after the stream completes:
+
+```python
+async for delta in agent.stream("Draft a short release note", session_id="demo"):
+    print(delta, end="", flush=True)
+```
+
+Require strict JSON, then validate it into an application type:
+
+```python
+from dataclasses import dataclass
+
+from samsarix_agent_engine import JsonValue
+
+
+@dataclass(frozen=True)
+class TicketRoute:
+    queue: str
+    priority: int
+
+
+def validate_route(value: JsonValue) -> TicketRoute:
+    if not isinstance(value, dict):
+        raise ValueError("expected an object")
+    queue = value.get("queue")
+    priority = value.get("priority")
+    if not isinstance(queue, str):
+        raise ValueError("queue must be a string")
+    if isinstance(priority, bool) or not isinstance(priority, int):
+        raise ValueError("priority must be an integer")
+    return TicketRoute(queue=queue, priority=priority)
+
+
+route = await agent.invoke_structured(
+    'Return only JSON like {"queue":"billing","priority":2}',
+    validate_route,
+)
+```
+
+Invalid JSON or validator failures raise `StructuredOutputError`, count as failed
+requests, and are not added to conversation history. The validator runs once and
+the SDK does not automatically retry or repair model output.
+
 The public API is exported from `samsarix_agent_engine`: `LLMAgentEngine`,
 `Agent`, `AgentOrchestrator`, `BaseLLMProvider`, `EchoProvider`,
-`OpenAICompatibleProvider`, `ChatMessage`, `ProviderResponse`, and the documented
-exception classes.
+`OpenAICompatibleProvider`, `ChatMessage`, `ProviderResponse`,
+`ProviderStreamChunk`, `JsonValue`, `parse_json_output`, and the documented exception
+classes.
 
 ## OpenAI-compatible endpoint
 
@@ -94,6 +142,9 @@ samsarix-agent run "health check" \
   --base-url http://127.0.0.1:8000/v1 \
   --json
 ```
+
+Use `--stream` for live text or `--expect-json` to reject a non-JSON response and
+write only the parsed JSON value. These output modes are mutually exclusive.
 
 `--base-url` is trusted developer/operator configuration. The client accepts only
 absolute HTTP(S) URLs without embedded credentials, query strings, or fragments.
@@ -172,9 +223,10 @@ Read [SECURITY.md](SECURITY.md) for trust boundaries and reporting guidance.
 ## Maturity and limitations
 
 - Alpha: the API may change before `1.0`.
-- Only non-streaming OpenAI-compatible chat completions are built in.
-- No persistent history, tool execution, structured output, provider-specific
-  Anthropic support, token estimation, or automatic fallback.
+- Only OpenAI-compatible chat completions are built in; streaming requires an SSE
+  implementation compatible with that protocol.
+- No persistent history, tool execution, provider-specific Anthropic support,
+  token estimation, automatic output repair, or automatic provider fallback.
 - The repository contains historical backend extracts that depend on private
   `helix-unified` modules and are not part of this product.
 - The GitHub repository, distribution, and import namespace use Samsarix branding.

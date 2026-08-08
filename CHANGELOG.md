@@ -11,7 +11,11 @@ once releases begin.
 - Bounded in-memory agents and sequential orchestration.
 - Deterministic offline echo provider.
 - Bounded OpenAI-compatible HTTP provider.
+- Native bounded SSE streaming with a compatibility fallback for custom providers.
+- Strict JSON parsing and caller-defined structured-output validation that avoid
+  committing invalid model responses to session history.
 - Non-interactive CLI with JSON output and meaningful exit codes.
+- CLI streaming and strict structured-output modes.
 - Real unit, integration, packaging, lint, type, and security checks.
 - Productization, security, legacy-boundary, setup, and release documentation.
 - Samsarix package, import, CLI, environment-variable, and company branding.

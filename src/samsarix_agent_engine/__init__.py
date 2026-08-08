@@ -11,8 +11,16 @@ from .errors import (
     InputValidationError,
     ProviderError,
     SamsarixAgentError,
+    StructuredOutputError,
 )
-from .models import AgentMetrics, ChatMessage, ProviderResponse
+from .models import (
+    AgentMetrics,
+    ChatMessage,
+    JsonValue,
+    ProviderResponse,
+    ProviderStreamChunk,
+    parse_json_output,
+)
 from .providers import BaseLLMProvider, EchoProvider, OpenAICompatibleProvider
 
 __version__ = "0.1.0"
@@ -27,10 +35,14 @@ __all__ = [
     "ConfigurationError",
     "EchoProvider",
     "InputValidationError",
+    "JsonValue",
     "LLMAgentEngine",
     "OpenAICompatibleProvider",
     "ProviderError",
     "ProviderResponse",
+    "ProviderStreamChunk",
     "SamsarixAgentError",
+    "StructuredOutputError",
     "__version__",
+    "parse_json_output",
 ]

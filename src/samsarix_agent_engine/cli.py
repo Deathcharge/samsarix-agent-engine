@@ -49,7 +49,18 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-input-chars", type=int, default=20_000)
     run.add_argument("--max-output-tokens", type=int, default=1_024)
     run.add_argument("--max-response-chars", type=int, default=200_000)
-    run.add_argument("--json", action="store_true", help="emit a JSON result")
+    output = run.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true", help="emit a JSON result envelope")
+    output.add_argument(
+        "--stream",
+        action="store_true",
+        help="stream text deltas as they arrive (not available with --json)",
+    )
+    output.add_argument(
+        "--expect-json",
+        action="store_true",
+        help="require the model response to be strict JSON and emit that value",
+    )
     return parser
 
 
@@ -106,7 +117,17 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
             model=model,
             system_prompt=args.system_prompt,
         )
-        content = await agent.invoke(prompt)
+        if args.stream:
+            chunks: list[str] = []
+            async for delta in agent.stream(prompt):
+                chunks.append(delta)
+                print(_safe_text_output(delta), end="", flush=True)
+            print()
+            content: object = "".join(chunks)
+        elif args.expect_json:
+            content = await agent.invoke_json(prompt)
+        else:
+            content = await agent.invoke(prompt)
         return {
             "content": content,
             "provider": agent.provider_name,
@@ -132,8 +153,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"provider error: {exc}", file=sys.stderr)
         return 3
 
+    if args.stream:
+        return 0
     if args.json:
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    elif args.expect_json:
+        print(json.dumps(result["content"], ensure_ascii=False, sort_keys=True))
     else:
         print(_safe_text_output(result["content"]))
     return 0
