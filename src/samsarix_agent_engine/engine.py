@@ -7,12 +7,15 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import inspect
+import json
 import re
 from collections import OrderedDict, deque
 from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import UTC, datetime
 from time import perf_counter
-from typing import TypeVar
+from typing import NoReturn, TypeVar
 
 from .errors import (
     BudgetExceededError,
@@ -22,9 +25,14 @@ from .errors import (
     ProviderError,
     SamsarixAgentError,
     StructuredOutputError,
+    ToolApprovalError,
+    ToolExecutionError,
 )
 from .models import (
     AgentMetrics,
+    ApprovalDecision,
+    ApprovalHandler,
+    ApprovalRequest,
     ChatMessage,
     Guardrail,
     GuardrailContext,
@@ -35,6 +43,10 @@ from .models import (
     RunEvent,
     RunEventType,
     SessionSnapshot,
+    ToolCall,
+    ToolDefinition,
+    ToolMessage,
+    ToolProviderResponse,
     parse_json_output,
 )
 from .providers import BaseLLMProvider, EchoProvider
@@ -61,6 +73,10 @@ class Agent:
         max_output_tokens: int,
         max_response_chars: int,
         max_events: int,
+        max_tool_rounds: int,
+        max_tool_calls: int,
+        max_tool_argument_chars: int,
+        max_tool_result_chars: int,
         temperature: float,
         input_guardrails: Sequence[Guardrail],
         output_guardrails: Sequence[Guardrail],
@@ -77,6 +93,10 @@ class Agent:
         self._max_output_tokens = max_output_tokens
         self._max_response_chars = max_response_chars
         self._max_events = max_events
+        self._max_tool_rounds = max_tool_rounds
+        self._max_tool_calls = max_tool_calls
+        self._max_tool_argument_chars = max_tool_argument_chars
+        self._max_tool_result_chars = max_tool_result_chars
         self._temperature = temperature
         self._input_guardrails = tuple(input_guardrails)
         self._output_guardrails = tuple(output_guardrails)
@@ -143,6 +163,171 @@ class Agent:
                 raise StructuredOutputError("structured output validation failed") from exc
 
         return await self._invoke_validated(prompt, session_id=session_id, validator=validate)
+
+    async def run_tools(
+        self,
+        prompt: str,
+        tools: Sequence[ToolDefinition],
+        *,
+        approval_handler: ApprovalHandler | None = None,
+        session_id: str = "default",
+    ) -> str:
+        """Run a bounded provider/tool loop and return one final text response.
+
+        Tool handlers are opt-in local code. Approval is required by default for
+        every definition, model arguments are strict JSON objects, execution is
+        sequential, and only the user's prompt plus final answer enter history.
+        """
+
+        prompt = self._validate_prompt(prompt)
+        session_id = self._validate_session_id(session_id)
+        tools = self._validate_tools(tools)
+        if approval_handler is not None and not callable(approval_handler):
+            raise InputValidationError("approval_handler must be callable")
+        tools_by_name = {tool.name: tool for tool in tools}
+
+        async with self._lock:
+            self._run_guardrails(
+                self._input_guardrails,
+                prompt,
+                GuardrailContext(
+                    agent_name=self.name,
+                    session_id=session_id,
+                    stage="input",
+                    provider_name=self.provider_name,
+                    model=self.model,
+                ),
+            )
+            self._ensure_session(session_id)
+            messages = self._build_tool_messages(session_id, prompt)
+            used_tool_calls = 0
+
+            for round_number in range(1, self._max_tool_rounds + 1):
+                request_number = self._begin_request(session_id)
+                self._record_event(
+                    "request.started",
+                    session_id=session_id,
+                    request_number=request_number,
+                )
+                started = perf_counter()
+                final_content: str | None = None
+                try:
+                    raw_response = await self._provider.invoke_tools(
+                        messages,
+                        self.model,
+                        tools,
+                        max_tokens=self._max_output_tokens,
+                        temperature=self._temperature,
+                    )
+                    if not isinstance(raw_response, ToolProviderResponse):
+                        raise ProviderError("custom provider returned an invalid tool response")
+                    response = raw_response
+                    if response.content is not None and (
+                        len(response.content) > self._max_response_chars
+                    ):
+                        raise ProviderError(
+                            "provider response exceeded the configured character limit"
+                        )
+                    self._metrics.input_tokens += response.input_tokens or 0
+                    self._metrics.output_tokens += response.output_tokens or 0
+
+                    if response.tool_calls:
+                        if round_number >= self._max_tool_rounds:
+                            raise BudgetExceededError(
+                                "tool loop reached its model-round limit before a final response"
+                            )
+                        if self._request_counts[session_id] >= self._max_requests_per_session:
+                            raise BudgetExceededError(
+                                "tool loop lacks request budget for a final model response"
+                            )
+                        if used_tool_calls + len(response.tool_calls) > self._max_tool_calls:
+                            raise BudgetExceededError("tool loop reached its tool-call limit")
+                        if any(
+                            len(call.arguments) > self._max_tool_argument_chars
+                            for call in response.tool_calls
+                        ):
+                            raise BudgetExceededError(
+                                "tool arguments exceeded the configured character limit"
+                            )
+                        messages.append(
+                            ToolMessage(
+                                role="assistant",
+                                content=response.content,
+                                tool_calls=response.tool_calls,
+                            )
+                        )
+                        for call in response.tool_calls:
+                            result_message = await self._execute_tool_call(
+                                call,
+                                tools_by_name,
+                                approval_handler=approval_handler,
+                                session_id=session_id,
+                                round_number=round_number,
+                                request_number=request_number,
+                            )
+                            messages.append(result_message)
+                            used_tool_calls += 1
+                        self._metrics.successes += 1
+                    else:
+                        if response.content is None:  # pragma: no cover - model invariant
+                            raise ProviderError("provider tool response contained no final text")
+                        self._run_guardrails(
+                            self._output_guardrails,
+                            response.content,
+                            GuardrailContext(
+                                agent_name=self.name,
+                                session_id=session_id,
+                                stage="output",
+                                provider_name=self.provider_name,
+                                model=self.model,
+                            ),
+                            request_number=request_number,
+                        )
+                        self._record_success(session_id, prompt, response.content)
+                        final_content = response.content
+                except asyncio.CancelledError:
+                    self._metrics.failures += 1
+                    self._record_event(
+                        "request.failed",
+                        session_id=session_id,
+                        request_number=request_number,
+                        latency_ms=self._elapsed_ms(started),
+                        error_type="CancelledError",
+                    )
+                    raise
+                except SamsarixAgentError as exc:
+                    self._metrics.failures += 1
+                    self._record_event(
+                        "request.failed",
+                        session_id=session_id,
+                        request_number=request_number,
+                        latency_ms=self._elapsed_ms(started),
+                        error_type=type(exc).__name__,
+                    )
+                    raise
+                except Exception as exc:
+                    self._metrics.failures += 1
+                    self._record_event(
+                        "request.failed",
+                        session_id=session_id,
+                        request_number=request_number,
+                        latency_ms=self._elapsed_ms(started),
+                        error_type="ProviderError",
+                    )
+                    raise ProviderError("custom provider tool invocation failed") from exc
+                finally:
+                    self._metrics.last_latency_ms = self._elapsed_ms(started)
+
+                self._record_event(
+                    "request.succeeded",
+                    session_id=session_id,
+                    request_number=request_number,
+                    latency_ms=self._metrics.last_latency_ms,
+                )
+                if final_content is not None:
+                    return final_content
+
+        raise BudgetExceededError("tool loop ended without a final response")
 
     async def stream(
         self,
@@ -504,6 +689,180 @@ class Agent:
                 blocked=True,
             )
 
+    async def _execute_tool_call(
+        self,
+        call: ToolCall,
+        tools_by_name: dict[str, ToolDefinition],
+        *,
+        approval_handler: ApprovalHandler | None,
+        session_id: str,
+        round_number: int,
+        request_number: int,
+    ) -> ToolMessage:
+        self._record_event(
+            "tool.requested",
+            session_id=session_id,
+            request_number=request_number,
+            tool_name=call.name,
+            tool_call_id=call.call_id,
+        )
+        tool = tools_by_name.get(call.name)
+        if tool is None:
+            self._metrics.tool_failures += 1
+            self._record_event(
+                "tool.failed",
+                session_id=session_id,
+                request_number=request_number,
+                error_type="UnavailableToolError",
+                tool_name=call.name,
+                tool_call_id=call.call_id,
+            )
+            raise ToolExecutionError(f"model requested unavailable tool {call.name!r}")
+
+        try:
+            parsed_arguments = parse_json_output(call.arguments, max_depth=32)
+        except StructuredOutputError as exc:
+            self._metrics.tool_failures += 1
+            self._record_event(
+                "tool.failed",
+                session_id=session_id,
+                request_number=request_number,
+                error_type="InvalidToolArguments",
+                tool_name=call.name,
+                tool_call_id=call.call_id,
+            )
+            raise ToolExecutionError("model supplied invalid bounded JSON tool arguments") from exc
+        if not isinstance(parsed_arguments, dict):
+            self._metrics.tool_failures += 1
+            self._record_event(
+                "tool.failed",
+                session_id=session_id,
+                request_number=request_number,
+                error_type="InvalidToolArguments",
+                tool_name=call.name,
+                tool_call_id=call.call_id,
+            )
+            raise ToolExecutionError("model tool arguments must be a JSON object")
+
+        if tool.requires_approval:
+            if approval_handler is None:
+                self._deny_tool(call, session_id, request_number, reason=None)
+            request = ApprovalRequest(
+                tool_name=call.name,
+                tool_call_id=call.call_id,
+                arguments=copy.deepcopy(parsed_arguments),
+                agent_name=self.name,
+                session_id=session_id,
+                round_number=round_number,
+            )
+            try:
+                approval = approval_handler(request)
+                if inspect.isawaitable(approval):
+                    approval = await approval
+                if isinstance(approval, bool):
+                    decision = ApprovalDecision(approved=approval)
+                elif isinstance(approval, ApprovalDecision):
+                    decision = approval
+                else:
+                    raise TypeError("unsupported approval result")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._metrics.tool_failures += 1
+                self._record_event(
+                    "tool.failed",
+                    session_id=session_id,
+                    request_number=request_number,
+                    error_type="ApprovalHandlerError",
+                    tool_name=call.name,
+                    tool_call_id=call.call_id,
+                )
+                raise ToolApprovalError(
+                    "tool approval handler failed",
+                    tool_name=call.name,
+                    tool_call_id=call.call_id,
+                ) from exc
+            if not decision.approved:
+                self._deny_tool(call, session_id, request_number, reason=decision.reason)
+            self._record_event(
+                "tool.approved",
+                session_id=session_id,
+                request_number=request_number,
+                tool_name=call.name,
+                tool_call_id=call.call_id,
+            )
+
+        try:
+            result = tool.handler(copy.deepcopy(parsed_arguments))
+            if inspect.isawaitable(result):
+                result = await result
+            serialized = json.dumps(
+                result,
+                allow_nan=False,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            parse_json_output(serialized, max_depth=32)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._metrics.tool_failures += 1
+            self._record_event(
+                "tool.failed",
+                session_id=session_id,
+                request_number=request_number,
+                error_type="ToolExecutionError",
+                tool_name=call.name,
+                tool_call_id=call.call_id,
+            )
+            raise ToolExecutionError("tool handler failed or returned invalid JSON") from exc
+        if len(serialized) > self._max_tool_result_chars:
+            self._metrics.tool_failures += 1
+            self._record_event(
+                "tool.failed",
+                session_id=session_id,
+                request_number=request_number,
+                error_type="ToolResultBudgetError",
+                tool_name=call.name,
+                tool_call_id=call.call_id,
+            )
+            raise BudgetExceededError("tool result exceeded the configured character limit")
+
+        self._metrics.tool_calls += 1
+        self._record_event(
+            "tool.succeeded",
+            session_id=session_id,
+            request_number=request_number,
+            tool_name=call.name,
+            tool_call_id=call.call_id,
+        )
+        return ToolMessage(role="tool", content=serialized, tool_call_id=call.call_id)
+
+    def _deny_tool(
+        self,
+        call: ToolCall,
+        session_id: str,
+        request_number: int,
+        *,
+        reason: str | None,
+    ) -> NoReturn:
+        self._metrics.tool_denials += 1
+        self._record_event(
+            "tool.denied",
+            session_id=session_id,
+            request_number=request_number,
+            error_type="ToolApprovalError",
+            tool_name=call.name,
+            tool_call_id=call.call_id,
+        )
+        suffix = f": {reason}" if reason else ""
+        raise ToolApprovalError(
+            f"tool call requires approval or was denied{suffix}",
+            tool_name=call.name,
+            tool_call_id=call.call_id,
+        )
+
     def _record_event(
         self,
         event_type: RunEventType,
@@ -512,6 +871,8 @@ class Agent:
         request_number: int | None = None,
         latency_ms: float | None = None,
         error_type: str | None = None,
+        tool_name: str | None = None,
+        tool_call_id: str | None = None,
     ) -> None:
         self._events.append(
             RunEvent(
@@ -524,6 +885,8 @@ class Agent:
                 request_number=request_number,
                 latency_ms=latency_ms,
                 error_type=error_type,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
             )
         )
 
@@ -538,6 +901,33 @@ class Agent:
         messages.extend(self._history[session_id])
         messages.append(ChatMessage(role="user", content=prompt))
         return messages
+
+    def _build_tool_messages(self, session_id: str, prompt: str) -> list[ToolMessage]:
+        messages: list[ToolMessage] = []
+        if self.system_prompt:
+            messages.append(ToolMessage(role="system", content=self.system_prompt))
+        messages.extend(
+            ToolMessage(role=message.role, content=message.content)
+            for message in self._history[session_id]
+        )
+        messages.append(ToolMessage(role="user", content=prompt))
+        return messages
+
+    @staticmethod
+    def _validate_tools(tools: object) -> tuple[ToolDefinition, ...]:
+        if isinstance(tools, (str, bytes)) or not isinstance(tools, Sequence):
+            raise InputValidationError("tools must be a sequence of ToolDefinition values")
+        result = tuple(tools)
+        if (
+            not result
+            or len(result) > 32
+            or any(not isinstance(tool, ToolDefinition) for tool in result)
+        ):
+            raise InputValidationError("tools must contain 1-32 ToolDefinition values")
+        names = [tool.name for tool in result]
+        if len(names) != len(set(names)):
+            raise InputValidationError("tool names must be unique")
+        return result
 
     @staticmethod
     def _normalize_provider_response(raw: ProviderResponse | str) -> ProviderResponse:
@@ -589,6 +979,10 @@ class LLMAgentEngine:
         max_output_tokens: int = 1_024,
         max_response_chars: int = 200_000,
         max_events: int = 1_000,
+        max_tool_rounds: int = 4,
+        max_tool_calls: int = 8,
+        max_tool_argument_chars: int = 20_000,
+        max_tool_result_chars: int = 20_000,
         temperature: float = 0.7,
     ) -> None:
         if not isinstance(max_history_messages, int) or not 2 <= max_history_messages <= 1_000:
@@ -608,6 +1002,20 @@ class LLMAgentEngine:
             raise ConfigurationError("max_response_chars must be between 1 and 1000000")
         if not isinstance(max_events, int) or not 1 <= max_events <= 100_000:
             raise ConfigurationError("max_events must be between 1 and 100000")
+        if not isinstance(max_tool_rounds, int) or not 1 <= max_tool_rounds <= 16:
+            raise ConfigurationError("max_tool_rounds must be between 1 and 16")
+        if not isinstance(max_tool_calls, int) or not 1 <= max_tool_calls <= 128:
+            raise ConfigurationError("max_tool_calls must be between 1 and 128")
+        if (
+            not isinstance(max_tool_argument_chars, int)
+            or not 2 <= max_tool_argument_chars <= 100_000
+        ):
+            raise ConfigurationError("max_tool_argument_chars must be between 2 and 100000")
+        if (
+            not isinstance(max_tool_result_chars, int)
+            or not 1 <= max_tool_result_chars <= 1_000_000
+        ):
+            raise ConfigurationError("max_tool_result_chars must be between 1 and 1000000")
         if not isinstance(temperature, (int, float)) or not 0 <= temperature <= 2:
             raise ConfigurationError("temperature must be between 0 and 2")
 
@@ -620,6 +1028,10 @@ class LLMAgentEngine:
         self._max_output_tokens = max_output_tokens
         self._max_response_chars = max_response_chars
         self._max_events = max_events
+        self._max_tool_rounds = max_tool_rounds
+        self._max_tool_calls = max_tool_calls
+        self._max_tool_argument_chars = max_tool_argument_chars
+        self._max_tool_result_chars = max_tool_result_chars
         self._temperature = float(temperature)
         self._managed_providers: dict[int, BaseLLMProvider] = {
             id(self._providers["echo"]): self._providers["echo"]
@@ -682,6 +1094,10 @@ class LLMAgentEngine:
             max_output_tokens=self._max_output_tokens,
             max_response_chars=self._max_response_chars,
             max_events=self._max_events,
+            max_tool_rounds=self._max_tool_rounds,
+            max_tool_calls=self._max_tool_calls,
+            max_tool_argument_chars=self._max_tool_argument_chars,
+            max_tool_result_chars=self._max_tool_result_chars,
             temperature=self._temperature,
             input_guardrails=input_guardrails,
             output_guardrails=output_guardrails,

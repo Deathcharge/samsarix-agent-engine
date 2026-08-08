@@ -21,8 +21,16 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .errors import ConfigurationError, ProviderError
-from .models import ChatMessage, ProviderResponse, ProviderStreamChunk
+from .errors import ConfigurationError, InputValidationError, ProviderError
+from .models import (
+    ChatMessage,
+    ProviderResponse,
+    ProviderStreamChunk,
+    ToolCall,
+    ToolDefinition,
+    ToolMessage,
+    ToolProviderResponse,
+)
 
 _RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 
@@ -44,6 +52,20 @@ class BaseLLMProvider(ABC):
     async def close(self) -> None:
         """Release provider resources. Stateless providers need no cleanup."""
         return None
+
+    async def invoke_tools(
+        self,
+        messages: Sequence[ToolMessage],
+        model: str,
+        tools: Sequence[ToolDefinition],
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> ToolProviderResponse:
+        """Return tool calls or final text; providers opt in by overriding this method."""
+
+        del messages, model, tools, max_tokens, temperature
+        raise ProviderError("provider does not support tool calls")
 
     async def stream(
         self,
@@ -189,6 +211,39 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             await response.aclose()
 
         return self._normalize_response(data, requested_model=model)
+
+    async def invoke_tools(
+        self,
+        messages: Sequence[ToolMessage],
+        model: str,
+        tools: Sequence[ToolDefinition],
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> ToolProviderResponse:
+        """Request OpenAI-compatible function calls with parallel execution disabled."""
+
+        payload = {
+            "model": model,
+            "messages": [message.as_dict() for message in messages],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": False,
+            "tools": [tool.as_dict() for tool in tools],
+            "tool_choice": "auto",
+            "parallel_tool_calls": False,
+        }
+        response = await self._send_with_retries(payload)
+        try:
+            try:
+                data = await self._read_bounded_json(response)
+            except httpx.TimeoutException as exc:
+                raise ProviderError("provider response timed out", retryable=True) from exc
+            except httpx.RequestError as exc:
+                raise ProviderError("provider response failed", retryable=True) from exc
+        finally:
+            await response.aclose()
+        return self._normalize_tool_response(data, requested_model=model)
 
     async def stream(
         self,
@@ -381,6 +436,70 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             input_tokens=input_tokens if isinstance(input_tokens, int) else None,
             output_tokens=output_tokens if isinstance(output_tokens, int) else None,
         )
+
+    @staticmethod
+    def _normalize_tool_response(data: Any, *, requested_model: str) -> ToolProviderResponse:
+        try:
+            message = data["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ProviderError(
+                "provider response did not match the tool completion schema"
+            ) from exc
+        if not isinstance(message, dict):
+            raise ProviderError("provider response did not match the tool completion schema")
+        content = message.get("content")
+        if content is not None and (not isinstance(content, str) or not content):
+            raise ProviderError("provider tool response contained invalid text content")
+        raw_calls = message.get("tool_calls") or []
+        if not isinstance(raw_calls, list):
+            raise ProviderError("provider response did not match the tool completion schema")
+        calls: list[ToolCall] = []
+        for raw_call in raw_calls:
+            try:
+                if not isinstance(raw_call, dict) or raw_call.get("type") != "function":
+                    raise TypeError
+                function = raw_call["function"]
+                if not isinstance(function, dict):
+                    raise TypeError
+                call = ToolCall(
+                    call_id=raw_call["id"],
+                    name=function["name"],
+                    arguments=function["arguments"],
+                )
+            except (KeyError, TypeError, InputValidationError) as exc:
+                raise ProviderError(
+                    "provider response contained an invalid function tool call"
+                ) from exc
+            calls.append(call)
+
+        usage = data.get("usage", {}) if isinstance(data, dict) else {}
+        input_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+        output_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+        served_model = (
+            data.get("model", requested_model) if isinstance(data, dict) else requested_model
+        )
+        try:
+            return ToolProviderResponse(
+                content=content,
+                tool_calls=tuple(calls),
+                model=served_model if isinstance(served_model, str) else requested_model,
+                input_tokens=(
+                    input_tokens
+                    if isinstance(input_tokens, int)
+                    and not isinstance(input_tokens, bool)
+                    and input_tokens >= 0
+                    else None
+                ),
+                output_tokens=(
+                    output_tokens
+                    if isinstance(output_tokens, int)
+                    and not isinstance(output_tokens, bool)
+                    and output_tokens >= 0
+                    else None
+                ),
+            )
+        except InputValidationError as exc:
+            raise ProviderError("provider tool response contained no usable output") from exc
 
     @staticmethod
     def _bounded_retry_after(value: str | None) -> float | None:

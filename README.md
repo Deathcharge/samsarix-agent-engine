@@ -24,12 +24,15 @@ CI verification. See [Productization](docs/PRODUCTIZATION.md).
   lifecycle events for audit integrations.
 - Exports and imports strict, versioned session snapshots while leaving storage,
   encryption, and retention policy to the application.
-- Supports custom providers through a four-argument async interface.
+- Runs opt-in function tools sequentially under explicit approval and call, round,
+  argument, result, and request budgets; approval is required by default.
+- Supports custom providers through a minimal async interface, with a separate
+  opt-in method for providers that support function tools.
 - Includes an explicit deterministic `EchoProvider` so setup can be evaluated
   without credentials, network access, or API cost.
 - Exposes meaningful CLI exit codes and JSON output for automation.
 
-It does not execute tools, persist conversations, provide authentication, host an
+It does not persist conversations automatically, provide authentication, host an
 API, estimate provider bills, or silently fall back to another paid provider.
 
 ## Fastest successful setup
@@ -170,11 +173,77 @@ Snapshots are strict, versioned, limited to 1,000 messages and 1,000,000 seriali
 characters, contain successful user/assistant turns plus the consumed request
 count, and never contain API credentials. They are not encrypted by the SDK.
 
+## Approval-aware tools
+
+Tools are local application code and are never enabled implicitly. Each definition
+has a bounded JSON Schema, a handler, and `requires_approval=True` by default.
+`run_tools()` requires a tool-capable provider such as the built-in
+`OpenAICompatibleProvider`; `EchoProvider` deliberately rejects tool calls. In this
+excerpt, `agent` is configured with that network provider:
+
+```python
+from samsarix_agent_engine import (
+    ApprovalDecision,
+    ApprovalRequest,
+    JsonValue,
+    ToolDefinition,
+)
+
+
+def close_ticket(arguments: dict[str, JsonValue]) -> JsonValue:
+    ticket_id = arguments.get("ticket_id")
+    if not isinstance(ticket_id, str):
+        raise ValueError("ticket_id is required")
+    # Make real effectful handlers idempotent before calling an external system.
+    return {"ticket_id": ticket_id, "status": "closed"}
+
+
+async def approve(request: ApprovalRequest) -> ApprovalDecision:
+    print(f"Approve {request.tool_name} with {request.arguments}?")
+    return ApprovalDecision(approved=False, reason="demo denies effects")
+
+
+tool = ToolDefinition(
+    name="close_ticket",
+    description="Close a support ticket after operator approval.",
+    parameters={
+        "type": "object",
+        "properties": {"ticket_id": {"type": "string"}},
+        "required": ["ticket_id"],
+        "additionalProperties": False,
+    },
+    handler=close_ticket,
+)
+
+answer = await agent.run_tools(
+    "Close ticket T-42",
+    [tool],
+    approval_handler=approve,
+    session_id="operator-demo",
+)
+```
+
+The network provider sends strict function schemas and requests sequential rather
+than parallel calls. Compatible endpoints can still return unexpected arguments,
+so handlers must validate every field before producing an effect. Missing approval
+fails before handler execution. Set `requires_approval=False` only for deliberately
+unattended tools, normally read-only operations.
+
+The default loop permits four model rounds and eight successful tool calls, while
+the session request budget independently caps model calls. The engine refuses to
+execute a tool unless enough model-request budget remains to consume its result.
+Arguments and tool results are strict bounded JSON. Tool results are sent back to
+the configured model provider, so handlers must return a minimal redacted result;
+never return credentials or unnecessary private records. Effects are not rolled
+back if a later provider call fails, so effectful handlers should use idempotency
+keys and application-owned recovery.
+
 The public API is exported from `samsarix_agent_engine`: `LLMAgentEngine`,
 `Agent`, `AgentOrchestrator`, `BaseLLMProvider`, `EchoProvider`,
 `OpenAICompatibleProvider`, `ChatMessage`, `ProviderResponse`,
-`ProviderStreamChunk`, `JsonValue`, `parse_json_output`, and the documented exception
-classes, guardrail/event models, and `SessionSnapshot`.
+`ProviderStreamChunk`, `JsonValue`, `parse_json_output`, tool definitions/messages,
+approval models, the documented exception classes, guardrail/event models, and
+`SessionSnapshot`.
 
 ## OpenAI-compatible endpoint
 
@@ -213,10 +282,11 @@ guardrail blocked or failed, and `130` means the user cancelled the command.
 
 The engine defaults to 20 retained history messages, 100 sessions, 20,000 input
 characters, 1,024 requested output tokens, and 100 requests per session. The
-default retained response limit is 200,000 characters. The OpenAI-compatible
-provider defaults to a 30-second timeout, two retries, no
-redirects, and a 2 MB response cap. All limits are configurable within guarded
-ranges.
+default retained response limit is 200,000 characters. Tool loops default to four
+model rounds, eight tool calls, and 20,000 characters each for arguments and
+results. The OpenAI-compatible provider defaults to a 30-second timeout, two
+retries, no redirects, and a 2 MB response cap. All limits are configurable within
+guarded ranges.
 
 These are local safety limits, not provider quotas. A two-agent, three-iteration
 orchestration performs six provider calls. The maximum built-in orchestration is
@@ -253,13 +323,13 @@ Agent ---------- validated input, session history, metrics, request budget
       |
 BaseLLMProvider
       +-- EchoProvider (offline setup/test double)
-      +-- OpenAICompatibleProvider (bounded HTTP client)
+      +-- OpenAICompatibleProvider (bounded HTTP/SSE/function-tool client)
       +-- application-defined provider
 ```
 
-Conversation state is process-local and is lost on restart. Each `Agent`
-serializes its own invocations so turns cannot be reordered; use separate agents
-for independent concurrency.
+Conversation state is process-local and is lost on restart unless the application
+explicitly exports a session snapshot. Each `Agent` serializes its own invocations
+so turns cannot be reordered; use separate agents for independent concurrency.
 
 ## Security and privacy
 
@@ -269,7 +339,9 @@ for independent concurrency.
 - HTTP error messages omit response bodies and transport exception text.
 - No telemetry is collected.
 - Conversation history remains in memory until evicted or cleared.
-- Model output is untrusted data; this package never executes it.
+- Model output is untrusted data and is never evaluated as code. Explicit tool
+  loops can dispatch only caller-registered handlers after bounded JSON parsing
+  and the configured approval policy.
 - Plain-text CLI output replaces terminal control characters; JSON mode escapes them.
 
 Read [SECURITY.md](SECURITY.md) for trust boundaries and reporting guidance.
@@ -279,8 +351,9 @@ Read [SECURITY.md](SECURITY.md) for trust boundaries and reporting guidance.
 - Alpha: the API may change before `1.0`.
 - Only OpenAI-compatible chat completions are built in; streaming requires an SSE
   implementation compatible with that protocol.
-- No built-in database/storage adapter, tool execution, provider-specific Anthropic
-  support, token estimation, automatic output repair, or automatic provider fallback.
+- No built-in database/storage adapter, tool rollback/resume, provider-specific
+  Anthropic support, token estimation, automatic output repair, or automatic
+  provider fallback.
 - The repository contains historical backend extracts that depend on private
   `helix-unified` modules and are not part of this product.
 - The GitHub repository, distribution, and import namespace use Samsarix branding.

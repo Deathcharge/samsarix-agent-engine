@@ -2,6 +2,7 @@ import pytest
 
 from samsarix_agent_engine import (
     AgentMetrics,
+    ApprovalDecision,
     ChatMessage,
     GuardrailResult,
     InputValidationError,
@@ -11,6 +12,10 @@ from samsarix_agent_engine import (
     SamsarixAgentError,
     SessionSnapshot,
     StructuredOutputError,
+    ToolCall,
+    ToolDefinition,
+    ToolMessage,
+    ToolProviderResponse,
     parse_json_output,
 )
 
@@ -44,6 +49,9 @@ def test_metrics_snapshot_is_stable() -> None:
         "successes": 1,
         "failures": 0,
         "guardrail_blocks": 0,
+        "tool_calls": 0,
+        "tool_failures": 0,
+        "tool_denials": 0,
         "input_tokens": 0,
         "output_tokens": 0,
         "last_latency_ms": 2.5,
@@ -93,6 +101,105 @@ def test_run_event_is_content_free_and_validated() -> None:
             model="echo",
             latency_ms=float("inf"),
         )
+    with pytest.raises(InputValidationError, match="supplied together"):
+        RunEvent(
+            event_type="tool.requested",
+            occurred_at="now",
+            agent_name="assistant",
+            session_id="demo",
+            provider_name="echo",
+            model="echo",
+            tool_name="lookup",
+        )
+    with pytest.raises(InputValidationError, match="unsupported"):
+        RunEvent(
+            event_type="unknown",  # type: ignore[arg-type]
+            occurred_at="now",
+            agent_name="assistant",
+            session_id="demo",
+            provider_name="echo",
+            model="echo",
+        )
+
+
+def test_tool_models_validate_and_serialize_openai_contract() -> None:
+    tool = ToolDefinition(
+        name="lookup_ticket",
+        description="Look up a support ticket.",
+        parameters={
+            "type": "object",
+            "properties": {"ticket_id": {"type": "string"}},
+            "required": ["ticket_id"],
+            "additionalProperties": False,
+        },
+        handler=lambda arguments: {"found": bool(arguments)},
+    )
+    definition = tool.as_dict()
+    assert definition["type"] == "function"
+    function_definition = definition["function"]
+    assert isinstance(function_definition, dict)
+    assert function_definition["strict"] is True
+
+    call = ToolCall(call_id="call-1", name="lookup_ticket", arguments='{"ticket_id":"T-1"}')
+    assistant = ToolMessage(role="assistant", tool_calls=(call,))
+    assert assistant.as_dict()["content"] is None
+    assert assistant.as_dict()["tool_calls"] == [call.as_dict()]
+    result = ToolMessage(role="tool", content='{"found":true}', tool_call_id="call-1")
+    assert result.as_dict()["tool_call_id"] == "call-1"
+    response = ToolProviderResponse(tool_calls=(call,), input_tokens=2, output_tokens=1)
+    assert response.tool_calls == (call,)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"name": "bad name"},
+        {"description": ""},
+        {"parameters": []},
+        {"parameters": {"value": float("nan")}},
+        {"handler": object()},
+        {"requires_approval": 1},
+    ],
+)
+def test_tool_definition_rejects_invalid_configuration(kwargs: dict[str, object]) -> None:
+    values: dict[str, object] = {
+        "name": "safe_tool",
+        "description": "Safe tool.",
+        "parameters": {"type": "object"},
+        "handler": lambda _arguments: None,
+    }
+    values.update(kwargs)
+    with pytest.raises(InputValidationError):
+        ToolDefinition(**values)  # type: ignore[arg-type]
+
+
+def test_tool_messages_and_responses_reject_ambiguous_shapes() -> None:
+    with pytest.raises(InputValidationError, match="require content"):
+        ToolMessage(role="user")
+    with pytest.raises(InputValidationError, match="neither"):
+        ToolProviderResponse()
+    with pytest.raises(InputValidationError, match="tool name"):
+        ToolCall(call_id="call-1", name="bad name", arguments="{}")
+    with pytest.raises(InputValidationError, match="call id"):
+        ToolCall(call_id="", name="safe", arguments="{}")
+    with pytest.raises(InputValidationError, match="arguments"):
+        ToolCall(call_id="call-1", name="safe", arguments="")
+    with pytest.raises(InputValidationError, match="tool result messages"):
+        ToolMessage(role="tool", content="{}", tool_call_id=1)  # type: ignore[arg-type]
+    with pytest.raises(InputValidationError, match="non-empty"):
+        ToolProviderResponse(content="")
+    with pytest.raises(InputValidationError, match="input_tokens"):
+        ToolProviderResponse(content="done", input_tokens=True)
+
+
+def test_approval_decision_rejects_unsafe_or_ambiguous_reason() -> None:
+    assert ApprovalDecision(approved=False, reason="operator denied").approved is False
+    with pytest.raises(InputValidationError, match="must not include"):
+        ApprovalDecision(approved=True, reason="unused")
+    with pytest.raises(InputValidationError, match="control"):
+        ApprovalDecision(approved=False, reason="unsafe\nreason")
+    with pytest.raises(InputValidationError, match="boolean"):
+        ApprovalDecision(approved=1)  # type: ignore[arg-type]
 
 
 def test_session_snapshot_round_trips_versioned_json() -> None:

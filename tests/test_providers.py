@@ -12,6 +12,9 @@ from samsarix_agent_engine import (
     EchoProvider,
     OpenAICompatibleProvider,
     ProviderError,
+    ToolCall,
+    ToolDefinition,
+    ToolMessage,
 )
 
 
@@ -69,6 +72,22 @@ async def test_echo_provider_is_explicitly_deterministic() -> None:
     assert string_chunks[0].delta == "plain string"
     assert string_chunks[0].model == "fallback-model"
 
+    with pytest.raises(ProviderError, match="does not support"):
+        await provider.invoke_tools(
+            [ToolMessage(role="user", content="hello")],
+            "echo",
+            [
+                ToolDefinition(
+                    name="lookup",
+                    description="Lookup.",
+                    parameters={"type": "object"},
+                    handler=lambda _arguments: None,
+                )
+            ],
+            max_tokens=10,
+            temperature=0,
+        )
+
 
 def test_echo_provider_rejects_empty_prefix() -> None:
     with pytest.raises(ConfigurationError, match="prefix"):
@@ -105,6 +124,146 @@ async def test_openai_compatible_provider_normalizes_success() -> None:
     assert response.output_tokens == 3
     await provider.close()
     assert not client.is_closed
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_normalizes_function_tool_calls() -> None:
+    seen_payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(httpx.Response(200, request=request, content=request.content).json())
+        return httpx.Response(
+            200,
+            json={
+                "model": "served-model",
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": '{"ticket_id":"T-1"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+            },
+            request=request,
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OpenAICompatibleProvider(base_url="https://models.example.test/v1", client=client)
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a ticket.",
+        parameters={"type": "object"},
+        handler=lambda _arguments: None,
+    )
+    response = await provider.invoke_tools(
+        [ToolMessage(role="user", content="find T-1")],
+        "asked-model",
+        [tool],
+        max_tokens=20,
+        temperature=0,
+    )
+
+    assert response.tool_calls == (
+        ToolCall(call_id="call-1", name="lookup", arguments='{"ticket_id":"T-1"}'),
+    )
+    assert response.input_tokens == 5
+    assert response.output_tokens == 2
+    assert seen_payloads[0]["parallel_tool_calls"] is False
+    assert seen_payloads[0]["tool_choice"] == "auto"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_normalizes_final_tool_loop_text() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": 7,
+                "choices": [{"message": {"content": "final answer"}}],
+                "usage": {"prompt_tokens": True, "completion_tokens": -1},
+            },
+            request=request,
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OpenAICompatibleProvider(base_url="https://models.example.test/v1", client=client)
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup.",
+        parameters={"type": "object"},
+        handler=lambda _arguments: None,
+    )
+    response = await provider.invoke_tools(
+        [ToolMessage(role="user", content="hello")],
+        "requested-model",
+        [tool],
+        max_tokens=10,
+        temperature=0,
+    )
+    assert response.content == "final answer"
+    assert response.model == "requested-model"
+    assert response.input_tokens is None
+    assert response.output_tokens is None
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "error"),
+    [
+        ({"content": None}, "no usable output"),
+        ({"content": 7}, "invalid text"),
+        ({"tool_calls": "wrong"}, "tool completion schema"),
+        (
+            {
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "bad name", "arguments": "{}"},
+                    }
+                ]
+            },
+            "invalid function tool call",
+        ),
+    ],
+)
+async def test_provider_rejects_malformed_tool_responses(
+    message: dict[str, object],
+    error: str,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": message}]}, request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OpenAICompatibleProvider(base_url="https://models.example.test/v1", client=client)
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup.",
+        parameters={"type": "object"},
+        handler=lambda _arguments: None,
+    )
+    with pytest.raises(ProviderError, match=error):
+        await provider.invoke_tools(
+            [ToolMessage(role="user", content="hello")],
+            "test",
+            [tool],
+            max_tokens=10,
+            temperature=0,
+        )
     await client.aclose()
 
 

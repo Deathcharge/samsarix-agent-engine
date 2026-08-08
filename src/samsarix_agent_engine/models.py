@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+import re
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, TypeAlias, cast
 
 from .errors import InputValidationError, StructuredOutputError
@@ -25,7 +26,14 @@ RunEventType = Literal[
     "guardrail.failed",
     "session.exported",
     "session.imported",
+    "tool.requested",
+    "tool.approved",
+    "tool.denied",
+    "tool.succeeded",
+    "tool.failed",
 ]
+ToolMessageRole = Literal["system", "user", "assistant", "tool"]
+_SAFE_TOOL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +220,8 @@ class RunEvent:
     request_number: int | None = None
     latency_ms: float | None = None
     error_type: str | None = None
+    tool_name: str | None = None
+    tool_call_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.event_type not in {
@@ -222,6 +232,11 @@ class RunEvent:
             "guardrail.failed",
             "session.exported",
             "session.imported",
+            "tool.requested",
+            "tool.approved",
+            "tool.denied",
+            "tool.succeeded",
+            "tool.failed",
         }:
             raise InputValidationError("unsupported run event type")
         if self.request_number is not None and (
@@ -237,6 +252,16 @@ class RunEvent:
             or self.latency_ms < 0
         ):
             raise InputValidationError("latency_ms must be a finite non-negative number")
+        if (self.tool_name is None) != (self.tool_call_id is None):
+            raise InputValidationError("tool_name and tool_call_id must be supplied together")
+        if self.tool_name is not None and not _SAFE_TOOL_NAME.fullmatch(self.tool_name):
+            raise InputValidationError("event tool_name was invalid")
+        if self.tool_call_id is not None and (
+            not self.tool_call_id
+            or len(self.tool_call_id) > 128
+            or any(ord(character) < 32 for character in self.tool_call_id)
+        ):
+            raise InputValidationError("event tool_call_id was invalid")
 
     def as_dict(self) -> dict[str, str | int | float | None]:
         """Return a stable content-free JSON representation."""
@@ -251,7 +276,234 @@ class RunEvent:
             "request_number": self.request_number,
             "latency_ms": self.latency_ms,
             "error_type": self.error_type,
+            "tool_name": self.tool_name,
+            "tool_call_id": self.tool_call_id,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    """One provider-requested function call with untrusted raw JSON arguments."""
+
+    call_id: str
+    name: str
+    arguments: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.call_id, str)
+            or not self.call_id
+            or len(self.call_id) > 128
+            or any(ord(character) < 32 for character in self.call_id)
+        ):
+            raise InputValidationError("tool call id must contain 1-128 safe characters")
+        if not isinstance(self.name, str) or not _SAFE_TOOL_NAME.fullmatch(self.name):
+            raise InputValidationError(
+                "tool name must be 1-64 letters, numbers, underscores, or hyphens"
+            )
+        if (
+            not isinstance(self.arguments, str)
+            or not self.arguments
+            or len(self.arguments) > 100_000
+        ):
+            raise InputValidationError("tool arguments must contain at most 100000 characters")
+
+    def as_dict(self) -> dict[str, JsonValue]:
+        """Return the OpenAI-compatible assistant tool-call representation."""
+
+        return {
+            "id": self.call_id,
+            "type": "function",
+            "function": {"name": self.name, "arguments": self.arguments},
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ToolMessage:
+    """Provider-neutral message used only inside an explicit tool loop."""
+
+    role: ToolMessageRole
+    content: str | None = None
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_call_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.role not in {"system", "user", "assistant", "tool"}:
+            raise InputValidationError("unsupported tool message role")
+        if self.content is not None and (not isinstance(self.content, str) or not self.content):
+            raise InputValidationError("tool message content must be non-empty when supplied")
+        if not isinstance(self.tool_calls, tuple) or any(
+            not isinstance(call, ToolCall) for call in self.tool_calls
+        ):
+            raise InputValidationError("tool_calls must be a tuple of ToolCall values")
+        if self.role in {"system", "user"} and (
+            self.content is None or self.tool_calls or self.tool_call_id is not None
+        ):
+            raise InputValidationError("system and user tool messages require content only")
+        if self.role == "assistant" and (
+            (self.content is None and not self.tool_calls) or self.tool_call_id is not None
+        ):
+            raise InputValidationError("assistant tool messages require content or tool calls")
+        if self.role == "tool" and (
+            self.content is None
+            or self.tool_calls
+            or not isinstance(self.tool_call_id, str)
+            or not self.tool_call_id
+            or len(self.tool_call_id) > 128
+            or any(ord(character) < 32 for character in self.tool_call_id)
+        ):
+            raise InputValidationError("tool result messages require content and tool_call_id")
+
+    def as_dict(self) -> dict[str, JsonValue]:
+        """Return the OpenAI-compatible tool-loop message representation."""
+
+        result: dict[str, JsonValue] = {"role": self.role}
+        if self.content is not None:
+            result["content"] = self.content
+        elif self.role == "assistant":
+            result["content"] = None
+        if self.tool_calls:
+            result["tool_calls"] = [call.as_dict() for call in self.tool_calls]
+        if self.tool_call_id is not None:
+            result["tool_call_id"] = self.tool_call_id
+        return result
+
+
+ToolHandler: TypeAlias = Callable[[dict[str, JsonValue]], JsonValue | Awaitable[JsonValue]]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolDefinition:
+    """Bounded function-tool schema and local handler; approval defaults to required."""
+
+    name: str
+    description: str
+    parameters: Mapping[str, JsonValue]
+    handler: ToolHandler = field(repr=False, compare=False)
+    requires_approval: bool = True
+    strict: bool = True
+    _parameters_json: str = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not _SAFE_TOOL_NAME.fullmatch(self.name):
+            raise InputValidationError(
+                "tool name must be 1-64 letters, numbers, underscores, or hyphens"
+            )
+        if (
+            not isinstance(self.description, str)
+            or not self.description.strip()
+            or len(self.description) > 1_024
+        ):
+            raise InputValidationError("tool description must contain 1-1024 characters")
+        if not isinstance(self.parameters, Mapping):
+            raise InputValidationError("tool parameters must be a JSON Schema object")
+        if not callable(self.handler):
+            raise InputValidationError("tool handler must be callable")
+        if not isinstance(self.requires_approval, bool) or not isinstance(self.strict, bool):
+            raise InputValidationError("tool policy flags must be booleans")
+        try:
+            parameters_json = json.dumps(
+                self.parameters,
+                allow_nan=False,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            parsed = parse_json_output(parameters_json, max_depth=32)
+        except (TypeError, ValueError, StructuredOutputError) as exc:
+            raise InputValidationError("tool parameters must contain bounded JSON values") from exc
+        if not isinstance(parsed, dict) or len(parameters_json) > 50_000:
+            raise InputValidationError(
+                "tool parameters must be a JSON object of at most 50000 characters"
+            )
+        object.__setattr__(self, "_parameters_json", parameters_json)
+
+    def as_dict(self) -> dict[str, JsonValue]:
+        """Return a detached OpenAI-compatible function-tool definition."""
+
+        parameters = parse_json_output(self._parameters_json, max_depth=32)
+        if not isinstance(parameters, dict):  # pragma: no cover - constructor invariant
+            raise InputValidationError("tool parameters invariant failed")
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": parameters,
+                "strict": self.strict,
+            },
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ToolProviderResponse:
+    """Normalized provider response containing either final text or tool calls."""
+
+    content: str | None = None
+    tool_calls: tuple[ToolCall, ...] = ()
+    model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.content is not None and (not isinstance(self.content, str) or not self.content):
+            raise InputValidationError("tool provider content must be non-empty when supplied")
+        if not isinstance(self.tool_calls, tuple) or any(
+            not isinstance(call, ToolCall) for call in self.tool_calls
+        ):
+            raise InputValidationError("tool provider calls must be a tuple of ToolCall values")
+        if self.content is None and not self.tool_calls:
+            raise InputValidationError(
+                "tool provider response contained neither text nor tool calls"
+            )
+        for label, value in (
+            ("input_tokens", self.input_tokens),
+            ("output_tokens", self.output_tokens),
+        ):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise InputValidationError(f"{label} must be a non-negative integer")
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalRequest:
+    """Content presented to a caller-owned approval handler before execution."""
+
+    tool_name: str
+    tool_call_id: str
+    arguments: dict[str, JsonValue]
+    agent_name: str
+    session_id: str
+    round_number: int
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalDecision:
+    """Explicit caller-owned tool approval decision."""
+
+    approved: bool
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.approved, bool):
+            raise InputValidationError("approval decision must be a boolean")
+        if self.reason is not None and (
+            not isinstance(self.reason, str)
+            or not self.reason.strip()
+            or len(self.reason) > 500
+            or any(ord(character) < 32 for character in self.reason)
+        ):
+            raise InputValidationError(
+                "approval reason must be 1-500 characters without control characters"
+            )
+        if self.approved and self.reason is not None:
+            raise InputValidationError("an approved decision must not include a reason")
+
+
+ApprovalHandler: TypeAlias = Callable[
+    [ApprovalRequest], ApprovalDecision | bool | Awaitable[ApprovalDecision | bool]
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -383,6 +635,9 @@ class AgentMetrics:
     successes: int = 0
     failures: int = 0
     guardrail_blocks: int = 0
+    tool_calls: int = 0
+    tool_failures: int = 0
+    tool_denials: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     last_latency_ms: float | None = None
@@ -395,6 +650,9 @@ class AgentMetrics:
             "successes": self.successes,
             "failures": self.failures,
             "guardrail_blocks": self.guardrail_blocks,
+            "tool_calls": self.tool_calls,
+            "tool_failures": self.tool_failures,
+            "tool_denials": self.tool_denials,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "last_latency_ms": self.last_latency_ms,

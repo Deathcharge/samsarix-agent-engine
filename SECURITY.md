@@ -32,6 +32,15 @@ describe the supported package unless an actual package path reaches them.
   content.
 - Complete-output guardrails must fail closed for streaming rather than expose
   content before inspection.
+- Tool definitions and handlers are trusted local application code. Model-selected
+  tool names and arguments are untrusted; arguments must remain bounded strict JSON,
+  and each handler must validate its own fields before any effect.
+- Effectful tools require explicit caller-owned approval by default. A tool must not
+  execute when approval is absent or denied, or when insufficient request, round,
+  or call budget remains to obtain the final model response.
+- Tool results are sent to the explicitly configured model provider. Handlers must
+  minimize and redact results, never return credentials, and use application-owned
+  idempotency and recovery for effects that cannot be rolled back.
 - Multi-agent orchestration must have a hard call-amplification limit.
 
 ## Reporting

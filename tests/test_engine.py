@@ -8,6 +8,8 @@ import pytest
 
 from samsarix_agent_engine import (
     AgentOrchestrator,
+    ApprovalDecision,
+    ApprovalRequest,
     BaseLLMProvider,
     BudgetExceededError,
     ChatMessage,
@@ -23,6 +25,12 @@ from samsarix_agent_engine import (
     ProviderStreamChunk,
     SessionSnapshot,
     StructuredOutputError,
+    ToolApprovalError,
+    ToolCall,
+    ToolDefinition,
+    ToolExecutionError,
+    ToolMessage,
+    ToolProviderResponse,
 )
 
 
@@ -112,6 +120,37 @@ class StreamingProvider(BaseLLMProvider):
             yield cast(ProviderStreamChunk, chunk)
 
 
+class ToolLoopProvider(BaseLLMProvider):
+    def __init__(self, responses: Sequence[ToolProviderResponse]) -> None:
+        self.responses = list(responses)
+        self.calls: list[tuple[list[ToolMessage], str, tuple[ToolDefinition, ...], int, float]] = []
+
+    async def invoke(
+        self,
+        messages: Sequence[ChatMessage],
+        model: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> ProviderResponse:
+        del messages, model, max_tokens, temperature
+        raise AssertionError("tool loop should call invoke_tools")
+
+    async def invoke_tools(
+        self,
+        messages: Sequence[ToolMessage],
+        model: str,
+        tools: Sequence[ToolDefinition],
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> ToolProviderResponse:
+        self.calls.append((list(messages), model, tuple(tools), max_tokens, temperature))
+        if not self.responses:
+            raise AssertionError("scripted tool responses exhausted")
+        return self.responses.pop(0)
+
+
 @pytest.mark.asyncio
 async def test_agent_invocation_tracks_real_history_and_metrics() -> None:
     provider = RecordingProvider("first")
@@ -140,6 +179,9 @@ async def test_agent_invocation_tracks_real_history_and_metrics() -> None:
         "successes": 2,
         "failures": 0,
         "guardrail_blocks": 0,
+        "tool_calls": 0,
+        "tool_failures": 0,
+        "tool_denials": 0,
         "input_tokens": 8,
         "output_tokens": 4,
         "last_latency_ms": pytest.approx(agent.get_metrics()["last_latency_ms"]),
@@ -266,6 +308,433 @@ async def test_event_buffer_is_bounded_and_can_be_cleared() -> None:
 
 
 @pytest.mark.asyncio
+async def test_approved_tool_loop_executes_and_commits_only_final_turn() -> None:
+    provider = ToolLoopProvider(
+        [
+            ToolProviderResponse(
+                tool_calls=(
+                    ToolCall(
+                        call_id="call-1",
+                        name="lookup_ticket",
+                        arguments='{"ticket_id":"T-1"}',
+                    ),
+                ),
+                input_tokens=4,
+                output_tokens=2,
+            ),
+            ToolProviderResponse(content="Ticket T-1 is open.", input_tokens=7, output_tokens=5),
+        ]
+    )
+    handled: list[dict[str, JsonValue]] = []
+    approvals: list[ApprovalRequest] = []
+
+    async def lookup(arguments: dict[str, JsonValue]) -> JsonValue:
+        handled.append(arguments)
+        return {"status": "open", "ticket_id": arguments["ticket_id"]}
+
+    async def approve(request: ApprovalRequest) -> ApprovalDecision:
+        approvals.append(request)
+        return ApprovalDecision(approved=True)
+
+    tool = ToolDefinition(
+        name="lookup_ticket",
+        description="Look up a support ticket.",
+        parameters={
+            "type": "object",
+            "properties": {"ticket_id": {"type": "string"}},
+            "required": ["ticket_id"],
+            "additionalProperties": False,
+        },
+        handler=lookup,
+    )
+    engine = LLMAgentEngine(max_output_tokens=321, temperature=0.25)
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="tools")
+
+    result = await agent.run_tools(
+        "Check T-1",
+        [tool],
+        approval_handler=approve,
+        session_id="support",
+    )
+
+    assert result == "Ticket T-1 is open."
+    assert handled == [{"ticket_id": "T-1"}]
+    assert approvals[0].arguments == {"ticket_id": "T-1"}
+    assert approvals[0].round_number == 1
+    assert [message.as_dict() for message in provider.calls[1][0]] == [
+        {"role": "user", "content": "Check T-1"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "lookup_ticket",
+                        "arguments": '{"ticket_id":"T-1"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"status":"open","ticket_id":"T-1"}',
+            "tool_call_id": "call-1",
+        },
+    ]
+    assert [message.content for message in agent.history("support")] == [
+        "Check T-1",
+        "Ticket T-1 is open.",
+    ]
+    metrics = agent.get_metrics()
+    assert metrics["requests"] == 2
+    assert metrics["successes"] == 2
+    assert metrics["tool_calls"] == 1
+    assert metrics["tool_failures"] == 0
+    assert [event.event_type for event in agent.events()] == [
+        "request.started",
+        "tool.requested",
+        "tool.approved",
+        "tool.succeeded",
+        "request.succeeded",
+        "request.started",
+        "request.succeeded",
+    ]
+    assert all("arguments" not in event.as_dict() for event in agent.events())
+
+
+@pytest.mark.asyncio
+async def test_tool_requires_explicit_approval_by_default() -> None:
+    provider = ToolLoopProvider(
+        [ToolProviderResponse(tool_calls=(ToolCall(call_id="call-1", name="act", arguments="{}"),))]
+    )
+    executed = False
+
+    def act(_: dict[str, JsonValue]) -> JsonValue:
+        nonlocal executed
+        executed = True
+        return {"ok": True}
+
+    engine = LLMAgentEngine()
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="tools")
+    tool = ToolDefinition(
+        name="act",
+        description="Perform an action.",
+        parameters={"type": "object"},
+        handler=act,
+    )
+
+    with pytest.raises(ToolApprovalError, match="requires approval") as captured:
+        await agent.run_tools("act", [tool])
+
+    assert executed is False
+    assert captured.value.tool_name == "act"
+    assert agent.get_metrics()["tool_denials"] == 1
+    assert agent.history() == ()
+    assert [event.event_type for event in agent.events()] == [
+        "request.started",
+        "tool.requested",
+        "tool.denied",
+        "request.failed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_operator_can_explicitly_deny_a_tool_with_safe_reason() -> None:
+    provider = ToolLoopProvider(
+        [ToolProviderResponse(tool_calls=(ToolCall(call_id="call-1", name="act", arguments="{}"),))]
+    )
+    tool = ToolDefinition(
+        name="act",
+        description="Act.",
+        parameters={"type": "object"},
+        handler=lambda _arguments: {"ok": True},
+    )
+    engine = LLMAgentEngine()
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="tools")
+
+    with pytest.raises(ToolApprovalError, match="operator policy"):
+        await agent.run_tools(
+            "act",
+            [tool],
+            approval_handler=lambda _request: ApprovalDecision(
+                approved=False,
+                reason="operator policy",
+            ),
+        )
+    assert agent.get_metrics()["tool_denials"] == 1
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_applies_output_guardrail_to_final_answer() -> None:
+    provider = ToolLoopProvider([ToolProviderResponse(content="blocked final")])
+    engine = LLMAgentEngine()
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(
+        name="assistant",
+        model="test",
+        provider="tools",
+        output_guardrails=(lambda _content, _context: False,),
+    )
+    tool = ToolDefinition(
+        name="read",
+        description="Read.",
+        parameters={"type": "object"},
+        handler=lambda _arguments: None,
+        requires_approval=False,
+    )
+
+    with pytest.raises(GuardrailError, match="output blocked"):
+        await agent.run_tools("read", [tool])
+    assert agent.history() == ()
+
+
+@pytest.mark.asyncio
+async def test_explicitly_non_approval_tool_can_run_unattended() -> None:
+    provider = ToolLoopProvider(
+        [
+            ToolProviderResponse(
+                tool_calls=(ToolCall(call_id="call-1", name="read_status", arguments="{}"),)
+            ),
+            ToolProviderResponse(content="All systems operational."),
+        ]
+    )
+    tool = ToolDefinition(
+        name="read_status",
+        description="Read system status without side effects.",
+        parameters={"type": "object"},
+        handler=lambda _arguments: {"status": "ok"},
+        requires_approval=False,
+    )
+    engine = LLMAgentEngine()
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="tools")
+
+    assert await agent.run_tools("status", [tool]) == "All systems operational."
+    assert "tool.approved" not in {event.event_type for event in agent.events()}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("call", "message"),
+    [
+        (ToolCall(call_id="call-1", name="missing", arguments="{}"), "unavailable tool"),
+        (ToolCall(call_id="call-1", name="act", arguments="not-json"), "invalid bounded JSON"),
+        (ToolCall(call_id="call-1", name="act", arguments="[]"), "must be a JSON object"),
+    ],
+)
+async def test_tool_loop_rejects_unavailable_or_invalid_calls(
+    call: ToolCall,
+    message: str,
+) -> None:
+    provider = ToolLoopProvider([ToolProviderResponse(tool_calls=(call,))])
+    tool = ToolDefinition(
+        name="act",
+        description="Act.",
+        parameters={"type": "object"},
+        handler=lambda _arguments: {"ok": True},
+        requires_approval=False,
+    )
+    engine = LLMAgentEngine()
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="tools")
+
+    with pytest.raises(ToolExecutionError, match=message):
+        await agent.run_tools("act", [tool])
+    assert agent.get_metrics()["tool_failures"] == 1
+
+
+@pytest.mark.asyncio
+async def test_tool_handler_and_approval_errors_are_sanitized() -> None:
+    def fail_tool(_: dict[str, JsonValue]) -> JsonValue:
+        raise RuntimeError("secret-bearing tool failure")
+
+    tool = ToolDefinition(
+        name="act",
+        description="Act.",
+        parameters={"type": "object"},
+        handler=fail_tool,
+        requires_approval=False,
+    )
+    provider = ToolLoopProvider(
+        [ToolProviderResponse(tool_calls=(ToolCall(call_id="call-1", name="act", arguments="{}"),))]
+    )
+    engine = LLMAgentEngine()
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="tools")
+
+    with pytest.raises(ToolExecutionError, match="handler failed") as handler_error:
+        await agent.run_tools("act", [tool])
+    assert "secret-bearing" not in str(handler_error.value)
+
+    provider = ToolLoopProvider(
+        [ToolProviderResponse(tool_calls=(ToolCall(call_id="call-2", name="act", arguments="{}"),))]
+    )
+    engine = LLMAgentEngine()
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="tools")
+    approval_tool = ToolDefinition(
+        name="act",
+        description="Act.",
+        parameters={"type": "object"},
+        handler=lambda _arguments: {"ok": True},
+    )
+
+    def fail_approval(_: ApprovalRequest) -> bool:
+        raise RuntimeError("secret-bearing approval failure")
+
+    with pytest.raises(ToolApprovalError, match="approval handler failed") as approval_error:
+        await agent.run_tools("act", [approval_tool], approval_handler=fail_approval)
+    assert "secret-bearing" not in str(approval_error.value)
+
+    provider = ToolLoopProvider(
+        [ToolProviderResponse(tool_calls=(ToolCall(call_id="call-3", name="act", arguments="{}"),))]
+    )
+    engine = LLMAgentEngine()
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="tools")
+    with pytest.raises(ToolApprovalError, match="approval handler failed"):
+        await agent.run_tools(
+            "act",
+            [approval_tool],
+            approval_handler=lambda _request: object(),  # type: ignore[arg-type,return-value]
+        )
+
+
+@pytest.mark.asyncio
+async def test_tool_rejects_non_finite_handler_result() -> None:
+    provider = ToolLoopProvider(
+        [
+            ToolProviderResponse(
+                tool_calls=(ToolCall(call_id="call-1", name="read", arguments="{}"),)
+            )
+        ]
+    )
+    tool = ToolDefinition(
+        name="read",
+        description="Read.",
+        parameters={"type": "object"},
+        handler=lambda _arguments: {"value": float("nan")},
+        requires_approval=False,
+    )
+    engine = LLMAgentEngine()
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="tools")
+
+    with pytest.raises(ToolExecutionError, match="invalid JSON"):
+        await agent.run_tools("read", [tool])
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_enforces_round_call_argument_and_result_limits() -> None:
+    tool = ToolDefinition(
+        name="act",
+        description="Act.",
+        parameters={"type": "object"},
+        handler=lambda _arguments: "result-too-long",
+        requires_approval=False,
+    )
+
+    provider = ToolLoopProvider(
+        [ToolProviderResponse(tool_calls=(ToolCall(call_id="call-1", name="act", arguments="{}"),))]
+    )
+    engine = LLMAgentEngine(max_tool_rounds=1)
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="tools")
+    with pytest.raises(BudgetExceededError, match="model-round limit"):
+        await agent.run_tools("act", [tool])
+
+    provider = ToolLoopProvider(
+        [
+            ToolProviderResponse(
+                tool_calls=(
+                    ToolCall(call_id="call-1", name="act", arguments="{}"),
+                    ToolCall(call_id="call-2", name="act", arguments="{}"),
+                )
+            )
+        ]
+    )
+    engine = LLMAgentEngine(max_tool_calls=1)
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="tools")
+    with pytest.raises(BudgetExceededError, match="tool-call limit"):
+        await agent.run_tools("act", [tool])
+
+    provider = ToolLoopProvider(
+        [
+            ToolProviderResponse(
+                tool_calls=(ToolCall(call_id="call-1", name="act", arguments='{"x":1}'),)
+            )
+        ]
+    )
+    engine = LLMAgentEngine(max_tool_argument_chars=2)
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="tools")
+    with pytest.raises(BudgetExceededError, match="arguments exceeded"):
+        await agent.run_tools("act", [tool])
+
+    provider = ToolLoopProvider(
+        [ToolProviderResponse(tool_calls=(ToolCall(call_id="call-1", name="act", arguments="{}"),))]
+    )
+    engine = LLMAgentEngine(max_tool_result_chars=2)
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="tools")
+    with pytest.raises(BudgetExceededError, match="result exceeded"):
+        await agent.run_tools("act", [tool])
+
+
+@pytest.mark.asyncio
+async def test_tool_does_not_execute_without_budget_for_final_response() -> None:
+    executed = False
+
+    def act(_: dict[str, JsonValue]) -> JsonValue:
+        nonlocal executed
+        executed = True
+        return {"ok": True}
+
+    tool = ToolDefinition(
+        name="act",
+        description="Act.",
+        parameters={"type": "object"},
+        handler=act,
+        requires_approval=False,
+    )
+    provider = ToolLoopProvider(
+        [ToolProviderResponse(tool_calls=(ToolCall(call_id="call-1", name="act", arguments="{}"),))]
+    )
+    engine = LLMAgentEngine(max_requests_per_session=1)
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="tools")
+
+    with pytest.raises(BudgetExceededError, match="final model response"):
+        await agent.run_tools("act", [tool])
+    assert executed is False
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_validates_tool_collection_and_approval_handler() -> None:
+    tool = ToolDefinition(
+        name="act",
+        description="Act.",
+        parameters={"type": "object"},
+        handler=lambda _arguments: None,
+    )
+    engine = LLMAgentEngine()
+    agent = engine.create_agent(name="assistant", model="echo")
+
+    with pytest.raises(InputValidationError, match="1-32"):
+        await agent.run_tools("act", [])
+    with pytest.raises(InputValidationError, match="unique"):
+        await agent.run_tools("act", [tool, tool])
+    with pytest.raises(InputValidationError, match="approval_handler"):
+        await agent.run_tools("act", [tool], approval_handler=object())  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
 async def test_agent_streams_deltas_then_commits_history_and_usage() -> None:
     provider = StreamingProvider()
     engine = LLMAgentEngine()
@@ -281,6 +750,9 @@ async def test_agent_streams_deltas_then_commits_history_and_usage() -> None:
         "successes": 1,
         "failures": 0,
         "guardrail_blocks": 0,
+        "tool_calls": 0,
+        "tool_failures": 0,
+        "tool_denials": 0,
         "input_tokens": 3,
         "output_tokens": 2,
         "last_latency_ms": None,
@@ -381,6 +853,9 @@ async def test_invalid_structured_output_is_counted_but_not_committed() -> None:
         "successes": 0,
         "failures": 1,
         "guardrail_blocks": 0,
+        "tool_calls": 0,
+        "tool_failures": 0,
+        "tool_denials": 0,
         "input_tokens": 4,
         "output_tokens": 2,
         "last_latency_ms": None,
@@ -614,6 +1089,10 @@ async def test_orchestrator_is_labeled_sequential_and_bounded() -> None:
         ({"max_output_tokens": 0}, "max_output_tokens"),
         ({"max_response_chars": 0}, "max_response_chars"),
         ({"max_events": 0}, "max_events"),
+        ({"max_tool_rounds": 0}, "max_tool_rounds"),
+        ({"max_tool_calls": 0}, "max_tool_calls"),
+        ({"max_tool_argument_chars": 1}, "max_tool_argument_chars"),
+        ({"max_tool_result_chars": 0}, "max_tool_result_chars"),
         ({"temperature": 3}, "temperature"),
         ({"default_provider": "bad name"}, "provider name"),
     ],

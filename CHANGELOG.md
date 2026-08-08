@@ -22,6 +22,11 @@ once releases begin.
   session import/export operations.
 - Strict, versioned, size-bounded session snapshots for application-managed
   persistence without credential or file-I/O coupling.
+- Opt-in OpenAI-compatible function tools with strict JSON argument parsing,
+  sequential execution, approval required by default, and hard model-round,
+  request, call, argument, and result limits.
+- Content-free tool request/approval/denial/success/failure audit events and
+  dedicated sanitized approval/execution error contracts.
 - Real unit, integration, packaging, lint, type, and security checks.
 - Productization, security, legacy-boundary, setup, and release documentation.
 - Samsarix package, import, CLI, environment-variable, and company branding.

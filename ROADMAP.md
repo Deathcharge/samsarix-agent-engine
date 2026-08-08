@@ -35,9 +35,10 @@ Current hardening backlog:
 - No proven downstream consumer or live compatible-endpoint smoke test.
 - Strong functional overlap with flagship and other portfolio LLM/agent packages weakens differentiation.
 - Package name/PyPI trusted publisher and actual CI success are unverified.
-- Built-in durable storage, tool execution, multiple native provider protocols,
-  and parallel turns remain absent; portable session snapshots and bounded native
-  streaming now cover the smallest persistence and interactive-output seams.
+- Built-in durable storage, resumable or rollback-capable tool workflows, multiple
+  native provider protocols, and parallel turns remain absent; portable session
+  snapshots, bounded native streaming, and approval-gated function tools now cover
+  the smallest persistence, interactive-output, and safe-action seams.
 - License transition and provenance are unresolved.
 
 ## Samsarix adoption
