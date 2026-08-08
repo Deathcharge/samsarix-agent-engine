@@ -16,6 +16,12 @@ once releases begin.
   committing invalid model responses to session history.
 - Non-interactive CLI with JSON output and meaningful exit codes.
 - CLI streaming and strict structured-output modes.
+- Synchronous input/output guardrails with fail-closed streaming semantics when
+  complete-output inspection is configured.
+- Bounded, content-free local lifecycle events for requests, guardrails, and
+  session import/export operations.
+- Strict, versioned, size-bounded session snapshots for application-managed
+  persistence without credential or file-I/O coupling.
 - Real unit, integration, packaging, lint, type, and security checks.
 - Productization, security, legacy-boundary, setup, and release documentation.
 - Samsarix package, import, CLI, environment-variable, and company branding.

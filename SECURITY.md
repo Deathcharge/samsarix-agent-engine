@@ -24,8 +24,14 @@ describe the supported package unless an actual package path reaches them.
   provider.
 - Every network request must be bounded by time, retry count, response size, and
   cancellation. Redirects are disabled by default.
-- Conversation and metrics state must remain bounded and process-local unless a
-  future explicit persistence feature defines stronger privacy controls.
+- Conversation, audit-event, and metrics state must remain bounded and process-local.
+  Portable session snapshots are created only through an explicit call, contain no
+  credentials, are size/version/schema checked, and leave encryption, retention,
+  access control, and storage to the calling application.
+- Audit events must not contain prompt, response, system-prompt, or credential
+  content.
+- Complete-output guardrails must fail closed for streaming rather than expose
+  content before inspection.
 - Multi-agent orchestration must have a hard call-amplification limit.
 
 ## Reporting

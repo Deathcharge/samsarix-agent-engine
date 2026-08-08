@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import AsyncIterator, Callable, Sequence
+from datetime import UTC, datetime
 from time import perf_counter
 from typing import TypeVar
 
 from .errors import (
     BudgetExceededError,
     ConfigurationError,
+    GuardrailError,
     InputValidationError,
     ProviderError,
     SamsarixAgentError,
@@ -24,9 +26,15 @@ from .errors import (
 from .models import (
     AgentMetrics,
     ChatMessage,
+    Guardrail,
+    GuardrailContext,
+    GuardrailResult,
     JsonValue,
     ProviderResponse,
     ProviderStreamChunk,
+    RunEvent,
+    RunEventType,
+    SessionSnapshot,
     parse_json_output,
 )
 from .providers import BaseLLMProvider, EchoProvider
@@ -52,7 +60,10 @@ class Agent:
         max_requests_per_session: int,
         max_output_tokens: int,
         max_response_chars: int,
+        max_events: int,
         temperature: float,
+        input_guardrails: Sequence[Guardrail],
+        output_guardrails: Sequence[Guardrail],
     ) -> None:
         self.name = name
         self.model = model
@@ -65,10 +76,14 @@ class Agent:
         self._max_requests_per_session = max_requests_per_session
         self._max_output_tokens = max_output_tokens
         self._max_response_chars = max_response_chars
+        self._max_events = max_events
         self._temperature = temperature
+        self._input_guardrails = tuple(input_guardrails)
+        self._output_guardrails = tuple(output_guardrails)
         self._history: OrderedDict[str, list[ChatMessage]] = OrderedDict()
         self._request_counts: dict[str, int] = {}
         self._metrics = AgentMetrics()
+        self._events: deque[RunEvent] = deque(maxlen=max_events)
         self._lock = asyncio.Lock()
 
     async def invoke(self, prompt: str, *, session_id: str = "default") -> str:
@@ -139,8 +154,28 @@ class Agent:
 
         prompt = self._validate_prompt(prompt)
         session_id = self._validate_session_id(session_id)
+        if self._output_guardrails:
+            raise ConfigurationError(
+                "streaming is unavailable when output guardrails are configured; use invoke()"
+            )
         async with self._lock:
-            self._begin_request(session_id)
+            self._run_guardrails(
+                self._input_guardrails,
+                prompt,
+                GuardrailContext(
+                    agent_name=self.name,
+                    session_id=session_id,
+                    stage="input",
+                    provider_name=self.provider_name,
+                    model=self.model,
+                ),
+            )
+            request_number = self._begin_request(session_id)
+            self._record_event(
+                "request.started",
+                session_id=session_id,
+                request_number=request_number,
+            )
             messages = self._build_messages(session_id, prompt)
             started = perf_counter()
             parts: list[str] = []
@@ -177,15 +212,43 @@ class Agent:
                 self._record_success(session_id, prompt, content)
             except (asyncio.CancelledError, GeneratorExit):
                 self._metrics.failures += 1
+                self._record_event(
+                    "request.failed",
+                    session_id=session_id,
+                    request_number=request_number,
+                    latency_ms=self._elapsed_ms(started),
+                    error_type="CancelledError",
+                )
                 raise
-            except SamsarixAgentError:
+            except SamsarixAgentError as exc:
                 self._metrics.failures += 1
+                self._record_event(
+                    "request.failed",
+                    session_id=session_id,
+                    request_number=request_number,
+                    latency_ms=self._elapsed_ms(started),
+                    error_type=type(exc).__name__,
+                )
                 raise
             except Exception as exc:
                 self._metrics.failures += 1
+                self._record_event(
+                    "request.failed",
+                    session_id=session_id,
+                    request_number=request_number,
+                    latency_ms=self._elapsed_ms(started),
+                    error_type="ProviderError",
+                )
                 raise ProviderError("custom provider streaming failed") from exc
             finally:
-                self._metrics.last_latency_ms = round((perf_counter() - started) * 1_000, 3)
+                self._metrics.last_latency_ms = self._elapsed_ms(started)
+
+            self._record_event(
+                "request.succeeded",
+                session_id=session_id,
+                request_number=request_number,
+                latency_ms=self._metrics.last_latency_ms,
+            )
 
     async def _invoke_validated(
         self,
@@ -197,7 +260,23 @@ class Agent:
         prompt = self._validate_prompt(prompt)
         session_id = self._validate_session_id(session_id)
         async with self._lock:
-            self._begin_request(session_id)
+            self._run_guardrails(
+                self._input_guardrails,
+                prompt,
+                GuardrailContext(
+                    agent_name=self.name,
+                    session_id=session_id,
+                    stage="input",
+                    provider_name=self.provider_name,
+                    model=self.model,
+                ),
+            )
+            request_number = self._begin_request(session_id)
+            self._record_event(
+                "request.started",
+                session_id=session_id,
+                request_number=request_number,
+            )
             messages = self._build_messages(session_id, prompt)
             started = perf_counter()
             try:
@@ -212,23 +291,62 @@ class Agent:
                     raise ProviderError("provider response exceeded the configured character limit")
                 self._metrics.input_tokens += response.input_tokens or 0
                 self._metrics.output_tokens += response.output_tokens or 0
+                self._run_guardrails(
+                    self._output_guardrails,
+                    response.content,
+                    GuardrailContext(
+                        agent_name=self.name,
+                        session_id=session_id,
+                        stage="output",
+                        provider_name=self.provider_name,
+                        model=self.model,
+                    ),
+                    request_number=request_number,
+                )
                 result = validator(response.content)
             except asyncio.CancelledError:
                 self._metrics.failures += 1
+                self._record_event(
+                    "request.failed",
+                    session_id=session_id,
+                    request_number=request_number,
+                    latency_ms=self._elapsed_ms(started),
+                    error_type="CancelledError",
+                )
                 raise
-            except SamsarixAgentError:
+            except SamsarixAgentError as exc:
                 self._metrics.failures += 1
+                self._record_event(
+                    "request.failed",
+                    session_id=session_id,
+                    request_number=request_number,
+                    latency_ms=self._elapsed_ms(started),
+                    error_type=type(exc).__name__,
+                )
                 raise
             except Exception as exc:
                 self._metrics.failures += 1
+                self._record_event(
+                    "request.failed",
+                    session_id=session_id,
+                    request_number=request_number,
+                    latency_ms=self._elapsed_ms(started),
+                    error_type="ProviderError",
+                )
                 raise ProviderError("custom provider invocation failed") from exc
             finally:
-                self._metrics.last_latency_ms = round((perf_counter() - started) * 1_000, 3)
+                self._metrics.last_latency_ms = self._elapsed_ms(started)
 
             self._record_success(session_id, prompt, response.content)
+            self._record_event(
+                "request.succeeded",
+                session_id=session_id,
+                request_number=request_number,
+                latency_ms=self._metrics.last_latency_ms,
+            )
             return result
 
-    def _begin_request(self, session_id: str) -> None:
+    def _begin_request(self, session_id: str) -> int:
         self._ensure_session(session_id)
         request_count = self._request_counts[session_id]
         if request_count >= self._max_requests_per_session:
@@ -237,6 +355,7 @@ class Agent:
             )
         self._request_counts[session_id] = request_count + 1
         self._metrics.requests += 1
+        return self._metrics.requests
 
     def _record_success(self, session_id: str, prompt: str, content: str) -> None:
         history = self._history[session_id]
@@ -247,7 +366,8 @@ class Agent:
             ]
         )
         if len(history) > self._max_history_messages:
-            del history[: len(history) - self._max_history_messages]
+            overflow = len(history) - self._max_history_messages
+            del history[: overflow + (overflow % 2)]
         self._history.move_to_end(session_id)
         self._metrics.successes += 1
 
@@ -268,6 +388,62 @@ class Agent:
         self._history.pop(session_id, None)
         self._request_counts.pop(session_id, None)
 
+    async def export_session(self, session_id: str = "default") -> SessionSnapshot:
+        """Return a consistent portable snapshot of one existing session."""
+
+        session_id = self._validate_session_id(session_id)
+        async with self._lock:
+            if session_id not in self._history:
+                raise InputValidationError(f"session {session_id!r} does not exist")
+            snapshot = SessionSnapshot(
+                session_id=session_id,
+                messages=tuple(self._history[session_id]),
+                request_count=self._request_counts[session_id],
+            )
+            self._record_event("session.exported", session_id=session_id)
+            return snapshot
+
+    async def import_session(
+        self,
+        snapshot: SessionSnapshot,
+        *,
+        session_id: str | None = None,
+        replace: bool = False,
+    ) -> None:
+        """Restore validated state without performing file I/O or a provider call."""
+
+        if not isinstance(snapshot, SessionSnapshot):
+            raise InputValidationError("snapshot must be a SessionSnapshot")
+        target = self._validate_session_id(session_id or snapshot.session_id)
+        if len(snapshot.messages) > self._max_history_messages:
+            raise InputValidationError("snapshot exceeds this agent's history limit")
+        if snapshot.request_count > self._max_requests_per_session:
+            raise InputValidationError("snapshot exceeds this agent's request limit")
+        if not isinstance(replace, bool):
+            raise InputValidationError("replace must be a boolean")
+        async with self._lock:
+            if target in self._history and not replace:
+                raise InputValidationError(f"session {target!r} already exists")
+            if target not in self._history:
+                self._ensure_session(target)
+            self._history[target] = list(snapshot.messages)
+            self._request_counts[target] = snapshot.request_count
+            self._history.move_to_end(target)
+            self._record_event("session.imported", session_id=target)
+
+    def events(self, session_id: str | None = None) -> tuple[RunEvent, ...]:
+        """Return bounded content-free lifecycle events, optionally for one session."""
+
+        if session_id is None:
+            return tuple(self._events)
+        session_id = self._validate_session_id(session_id)
+        return tuple(event for event in self._events if event.session_id == session_id)
+
+    def clear_events(self) -> None:
+        """Clear the local audit-event buffer without changing sessions or metrics."""
+
+        self._events.clear()
+
     def get_metrics(self) -> dict[str, int | float | None]:
         """Return local request and provider-reported token counters."""
 
@@ -282,6 +458,78 @@ class Agent:
             self._request_counts.pop(evicted, None)
         self._history[session_id] = []
         self._request_counts[session_id] = 0
+
+    def _run_guardrails(
+        self,
+        guardrails: Sequence[Guardrail],
+        content: str,
+        context: GuardrailContext,
+        *,
+        request_number: int | None = None,
+    ) -> None:
+        for guardrail in guardrails:
+            try:
+                decision = guardrail(content, context)
+                if isinstance(decision, bool):
+                    result = GuardrailResult(allowed=decision)
+                elif isinstance(decision, GuardrailResult):
+                    result = decision
+                else:
+                    raise TypeError("unsupported guardrail result")
+            except Exception as exc:
+                self._record_event(
+                    "guardrail.failed",
+                    session_id=context.session_id,
+                    request_number=request_number,
+                    error_type="GuardrailCallbackError",
+                )
+                raise GuardrailError(
+                    f"{context.stage} guardrail failed",
+                    stage=context.stage,
+                    blocked=False,
+                ) from exc
+            if result.allowed:
+                continue
+            self._metrics.guardrail_blocks += 1
+            self._record_event(
+                "guardrail.blocked",
+                session_id=context.session_id,
+                request_number=request_number,
+                error_type="GuardrailError",
+            )
+            suffix = f": {result.reason}" if result.reason else ""
+            raise GuardrailError(
+                f"{context.stage} blocked by guardrail{suffix}",
+                stage=context.stage,
+                blocked=True,
+            )
+
+    def _record_event(
+        self,
+        event_type: RunEventType,
+        *,
+        session_id: str,
+        request_number: int | None = None,
+        latency_ms: float | None = None,
+        error_type: str | None = None,
+    ) -> None:
+        self._events.append(
+            RunEvent(
+                event_type=event_type,
+                occurred_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                agent_name=self.name,
+                session_id=session_id,
+                provider_name=self.provider_name,
+                model=self.model,
+                request_number=request_number,
+                latency_ms=latency_ms,
+                error_type=error_type,
+            )
+        )
+
+    @staticmethod
+    def _elapsed_ms(started: float) -> float:
+        return round((perf_counter() - started) * 1_000, 3)
 
     def _build_messages(self, session_id: str, prompt: str) -> list[ChatMessage]:
         messages: list[ChatMessage] = []
@@ -340,6 +588,7 @@ class LLMAgentEngine:
         max_requests_per_session: int = 100,
         max_output_tokens: int = 1_024,
         max_response_chars: int = 200_000,
+        max_events: int = 1_000,
         temperature: float = 0.7,
     ) -> None:
         if not isinstance(max_history_messages, int) or not 2 <= max_history_messages <= 1_000:
@@ -357,6 +606,8 @@ class LLMAgentEngine:
             raise ConfigurationError("max_output_tokens must be between 1 and 131072")
         if not isinstance(max_response_chars, int) or not 1 <= max_response_chars <= 1_000_000:
             raise ConfigurationError("max_response_chars must be between 1 and 1000000")
+        if not isinstance(max_events, int) or not 1 <= max_events <= 100_000:
+            raise ConfigurationError("max_events must be between 1 and 100000")
         if not isinstance(temperature, (int, float)) or not 0 <= temperature <= 2:
             raise ConfigurationError("temperature must be between 0 and 2")
 
@@ -368,6 +619,7 @@ class LLMAgentEngine:
         self._max_requests_per_session = max_requests_per_session
         self._max_output_tokens = max_output_tokens
         self._max_response_chars = max_response_chars
+        self._max_events = max_events
         self._temperature = float(temperature)
         self._managed_providers: dict[int, BaseLLMProvider] = {
             id(self._providers["echo"]): self._providers["echo"]
@@ -392,6 +644,8 @@ class LLMAgentEngine:
         model: str,
         system_prompt: str = "",
         provider: str | None = None,
+        input_guardrails: Sequence[Guardrail] = (),
+        output_guardrails: Sequence[Guardrail] = (),
     ) -> Agent:
         """Create an independent agent using a registered provider."""
 
@@ -406,6 +660,8 @@ class LLMAgentEngine:
         if not isinstance(system_prompt, str) or len(system_prompt) > self._max_input_chars:
             raise InputValidationError("system_prompt must be a string within the input limit")
         provider_name = self._validate_provider_name(provider or self.default_provider)
+        input_guardrails = self._validate_guardrails(input_guardrails, "input_guardrails")
+        output_guardrails = self._validate_guardrails(output_guardrails, "output_guardrails")
         try:
             provider_instance = self._providers[provider_name]
         except KeyError as exc:
@@ -425,7 +681,10 @@ class LLMAgentEngine:
             max_requests_per_session=self._max_requests_per_session,
             max_output_tokens=self._max_output_tokens,
             max_response_chars=self._max_response_chars,
+            max_events=self._max_events,
             temperature=self._temperature,
+            input_guardrails=input_guardrails,
+            output_guardrails=output_guardrails,
         )
 
     async def close(self) -> None:
@@ -457,6 +716,18 @@ class LLMAgentEngine:
                 "provider name must be 1-64 letters, numbers, underscores, or hyphens"
             )
         return name
+
+    @staticmethod
+    def _validate_guardrails(
+        guardrails: object,
+        label: str,
+    ) -> tuple[Guardrail, ...]:
+        if isinstance(guardrails, (str, bytes)) or not isinstance(guardrails, Sequence):
+            raise ConfigurationError(f"{label} must be a sequence of callables")
+        result = tuple(guardrails)
+        if len(result) > 32 or any(not callable(guardrail) for guardrail in result):
+            raise ConfigurationError(f"{label} must contain at most 32 callables")
+        return result
 
 
 class AgentOrchestrator:

@@ -38,3 +38,12 @@ class ProviderError(SamsarixAgentError):
 
 class StructuredOutputError(ProviderError):
     """Raised when a provider response cannot satisfy a structured-output contract."""
+
+
+class GuardrailError(SamsarixAgentError):
+    """Raised when a local input or output guardrail fails or blocks content."""
+
+    def __init__(self, message: str, *, stage: str, blocked: bool) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.blocked = blocked

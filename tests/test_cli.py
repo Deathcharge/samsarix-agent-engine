@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from samsarix_agent_engine import ProviderError, __version__, cli
+from samsarix_agent_engine import GuardrailError, ProviderError, __version__, cli
 
 
 def test_cli_runs_offline_without_credentials(capsys: pytest.CaptureFixture[str]) -> None:
@@ -100,6 +100,18 @@ def test_cli_maps_provider_error_to_exit_three(
     monkeypatch.setattr(cli, "_run", fail)
     assert cli.main(["run", "hello"]) == 3
     assert capsys.readouterr().err == "provider error: unavailable\n"
+
+
+def test_cli_maps_guardrail_error_to_exit_four(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def fail(_: object) -> dict[str, object]:
+        raise GuardrailError("input blocked", stage="input", blocked=True)
+
+    monkeypatch.setattr(cli, "_run", fail)
+    assert cli.main(["run", "hello"]) == 4
+    assert capsys.readouterr().err == "guardrail error: input blocked\n"
 
 
 def test_cli_version(capsys: pytest.CaptureFixture[str]) -> None:

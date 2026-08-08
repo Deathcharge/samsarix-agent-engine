@@ -3,10 +3,13 @@ import pytest
 from samsarix_agent_engine import (
     AgentMetrics,
     ChatMessage,
+    GuardrailResult,
     InputValidationError,
     ProviderResponse,
     ProviderStreamChunk,
+    RunEvent,
     SamsarixAgentError,
+    SessionSnapshot,
     StructuredOutputError,
     parse_json_output,
 )
@@ -40,10 +43,113 @@ def test_metrics_snapshot_is_stable() -> None:
         "requests": 1,
         "successes": 1,
         "failures": 0,
+        "guardrail_blocks": 0,
         "input_tokens": 0,
         "output_tokens": 0,
         "last_latency_ms": 2.5,
     }
+
+
+def test_guardrail_result_validates_safe_reason() -> None:
+    assert GuardrailResult(allowed=False, reason="policy").reason == "policy"
+    with pytest.raises(InputValidationError, match="must not include"):
+        GuardrailResult(allowed=True, reason="unused")
+    with pytest.raises(InputValidationError, match="control"):
+        GuardrailResult(allowed=False, reason="unsafe\nreason")
+    with pytest.raises(InputValidationError, match="boolean"):
+        GuardrailResult(allowed=1)  # type: ignore[arg-type]
+
+
+def test_run_event_is_content_free_and_validated() -> None:
+    event = RunEvent(
+        event_type="request.succeeded",
+        occurred_at="2026-08-08T00:00:00Z",
+        agent_name="assistant",
+        session_id="demo",
+        provider_name="echo",
+        model="echo",
+        request_number=1,
+        latency_ms=1.25,
+    )
+    assert event.as_dict()["event_type"] == "request.succeeded"
+    assert "content" not in event.as_dict()
+    with pytest.raises(InputValidationError, match="request_number"):
+        RunEvent(
+            event_type="request.started",
+            occurred_at="now",
+            agent_name="assistant",
+            session_id="demo",
+            provider_name="echo",
+            model="echo",
+            request_number=0,
+        )
+    with pytest.raises(InputValidationError, match="latency_ms"):
+        RunEvent(
+            event_type="request.failed",
+            occurred_at="now",
+            agent_name="assistant",
+            session_id="demo",
+            provider_name="echo",
+            model="echo",
+            latency_ms=float("inf"),
+        )
+
+
+def test_session_snapshot_round_trips_versioned_json() -> None:
+    snapshot = SessionSnapshot(
+        session_id="demo",
+        messages=(
+            ChatMessage(role="user", content="hello"),
+            ChatMessage(role="assistant", content="hi"),
+        ),
+        request_count=1,
+    )
+    restored = SessionSnapshot.from_json(snapshot.to_json())
+    assert restored == snapshot
+    assert restored.as_dict()["format"] == "samsarix-agent-session"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"format": "wrong", "version": 1, "session_id": "x", "request_count": 0, "messages": []},
+        {
+            "format": "samsarix-agent-session",
+            "version": 1,
+            "session_id": "x",
+            "request_count": 0,
+            "messages": [{"role": "system", "content": "unsafe"}],
+        },
+    ],
+)
+def test_session_snapshot_rejects_untrusted_formats(value: dict[str, object]) -> None:
+    with pytest.raises(InputValidationError):
+        SessionSnapshot.from_dict(value)
+
+
+def test_session_snapshot_rejects_incomplete_turns_and_oversized_json() -> None:
+    with pytest.raises(InputValidationError, match="complete"):
+        SessionSnapshot(
+            session_id="demo",
+            messages=(ChatMessage(role="user", content="hello"),),
+            request_count=1,
+        )
+    with pytest.raises(InputValidationError, match="at most"):
+        SessionSnapshot.from_json("x" * (SessionSnapshot.MAX_SERIALIZED_CHARS + 1))
+    with pytest.raises(InputValidationError, match="valid bounded JSON"):
+        SessionSnapshot.from_json("not-json")
+    with pytest.raises(InputValidationError, match="size limit"):
+        SessionSnapshot(
+            session_id="demo",
+            messages=(
+                ChatMessage(
+                    role="user",
+                    content="x" * SessionSnapshot.MAX_SERIALIZED_CHARS,
+                ),
+                ChatMessage(role="assistant", content="reply"),
+            ),
+            request_count=1,
+        )
 
 
 def test_stream_chunks_validate_terminal_contract_and_usage() -> None:

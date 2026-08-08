@@ -12,12 +12,16 @@ from samsarix_agent_engine import (
     BudgetExceededError,
     ChatMessage,
     ConfigurationError,
+    GuardrailContext,
+    GuardrailError,
+    GuardrailResult,
     InputValidationError,
     JsonValue,
     LLMAgentEngine,
     ProviderError,
     ProviderResponse,
     ProviderStreamChunk,
+    SessionSnapshot,
     StructuredOutputError,
 )
 
@@ -135,11 +139,130 @@ async def test_agent_invocation_tracks_real_history_and_metrics() -> None:
         "requests": 2,
         "successes": 2,
         "failures": 0,
+        "guardrail_blocks": 0,
         "input_tokens": 8,
         "output_tokens": 4,
         "last_latency_ms": pytest.approx(agent.get_metrics()["last_latency_ms"]),
     }
     assert len(agent.history("thread-1")) == 4
+    assert [event.event_type for event in agent.events("thread-1")] == [
+        "request.started",
+        "request.succeeded",
+        "request.started",
+        "request.succeeded",
+    ]
+    assert all("content" not in event.as_dict() for event in agent.events())
+
+
+@pytest.mark.asyncio
+async def test_input_guardrail_blocks_before_provider_request() -> None:
+    provider = RecordingProvider()
+    contexts: list[GuardrailContext] = []
+
+    def block(_: str, context: GuardrailContext) -> GuardrailResult:
+        contexts.append(context)
+        return GuardrailResult(allowed=False, reason="sensitive input")
+
+    engine = LLMAgentEngine()
+    engine.register_provider("recording", provider)
+    agent = engine.create_agent(
+        name="assistant",
+        model="test",
+        provider="recording",
+        input_guardrails=(block,),
+    )
+
+    with pytest.raises(GuardrailError, match="sensitive input") as captured:
+        await agent.invoke("secret")
+
+    assert captured.value.stage == "input"
+    assert captured.value.blocked is True
+    assert provider.calls == []
+    assert agent.get_metrics()["requests"] == 0
+    assert agent.get_metrics()["guardrail_blocks"] == 1
+    assert contexts[0].provider_name == "recording"
+    assert [event.event_type for event in agent.events()] == ["guardrail.blocked"]
+
+
+@pytest.mark.asyncio
+async def test_output_guardrail_blocks_after_request_without_committing_history() -> None:
+    provider = RecordingProvider("unsafe output")
+
+    def block(_: str, context: GuardrailContext) -> bool:
+        assert context.stage == "output"
+        return False
+
+    engine = LLMAgentEngine()
+    engine.register_provider("recording", provider)
+    agent = engine.create_agent(
+        name="assistant",
+        model="test",
+        provider="recording",
+        output_guardrails=(block,),
+    )
+
+    with pytest.raises(GuardrailError, match="output blocked"):
+        await agent.invoke("hello")
+
+    assert len(provider.calls) == 1
+    assert agent.history() == ()
+    assert agent.get_metrics()["failures"] == 1
+    assert agent.get_metrics()["guardrail_blocks"] == 1
+    assert [event.event_type for event in agent.events()] == [
+        "request.started",
+        "guardrail.blocked",
+        "request.failed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_guardrail_callback_failure_is_sanitized_and_audited() -> None:
+    provider = RecordingProvider()
+
+    def fail(_: str, __: GuardrailContext) -> bool:
+        raise RuntimeError("secret-bearing callback failure")
+
+    engine = LLMAgentEngine()
+    engine.register_provider("recording", provider)
+    agent = engine.create_agent(
+        name="assistant",
+        model="test",
+        provider="recording",
+        input_guardrails=(fail,),
+    )
+
+    with pytest.raises(GuardrailError, match="guardrail failed") as captured:
+        await agent.invoke("hello")
+    assert "secret-bearing" not in str(captured.value)
+    assert captured.value.blocked is False
+    assert [event.event_type for event in agent.events()] == ["guardrail.failed"]
+
+
+@pytest.mark.asyncio
+async def test_streaming_fails_closed_when_output_guardrails_are_configured() -> None:
+    engine = LLMAgentEngine()
+    agent = engine.create_agent(
+        name="assistant",
+        model="echo",
+        output_guardrails=(lambda _content, _context: True,),
+    )
+
+    with pytest.raises(ConfigurationError, match="output guardrails"):
+        _ = [chunk async for chunk in agent.stream("hello")]
+    assert agent.get_metrics()["requests"] == 0
+
+
+@pytest.mark.asyncio
+async def test_event_buffer_is_bounded_and_can_be_cleared() -> None:
+    engine = LLMAgentEngine(max_events=2)
+    agent = engine.create_agent(name="assistant", model="echo")
+
+    await agent.invoke("one", session_id="a")
+    await agent.invoke("two", session_id="b")
+    assert len(agent.events()) == 2
+    assert {event.session_id for event in agent.events()} == {"b"}
+    agent.clear_events()
+    assert agent.events() == ()
 
 
 @pytest.mark.asyncio
@@ -157,6 +280,7 @@ async def test_agent_streams_deltas_then_commits_history_and_usage() -> None:
         "requests": 1,
         "successes": 1,
         "failures": 0,
+        "guardrail_blocks": 0,
         "input_tokens": 3,
         "output_tokens": 2,
         "last_latency_ms": None,
@@ -256,6 +380,7 @@ async def test_invalid_structured_output_is_counted_but_not_committed() -> None:
         "requests": 1,
         "successes": 0,
         "failures": 1,
+        "guardrail_blocks": 0,
         "input_tokens": 4,
         "output_tokens": 2,
         "last_latency_ms": None,
@@ -304,6 +429,76 @@ async def test_history_and_session_limits_evict_oldest_state() -> None:
     assert len(agent.history("b")) == 2
     agent.clear_history()
     assert agent.history("b") == ()
+
+
+@pytest.mark.asyncio
+async def test_odd_history_limit_still_retains_only_complete_turns() -> None:
+    engine = LLMAgentEngine(max_history_messages=3)
+    agent = engine.create_agent(name="assistant", model="echo")
+
+    await agent.invoke("one")
+    await agent.invoke("two")
+
+    assert [message.content for message in agent.history()] == ["two", "Echo: two"]
+
+
+@pytest.mark.asyncio
+async def test_session_snapshot_round_trip_restores_history_and_budget() -> None:
+    provider = RecordingProvider("first")
+    engine = LLMAgentEngine(max_requests_per_session=3)
+    engine.register_provider("recording", provider)
+    source = engine.create_agent(name="source", model="test", provider="recording")
+
+    await source.invoke("hello", session_id="portable")
+    snapshot = await source.export_session("portable")
+    serialized = snapshot.to_json()
+
+    restored = engine.create_agent(name="restored", model="test", provider="recording")
+    await restored.import_session(SessionSnapshot.from_json(serialized))
+    provider.response = "second"
+    assert await restored.invoke("again", session_id="portable") == "second"
+    assert [message.content for message in provider.calls[-1][0]] == [
+        "hello",
+        "first",
+        "again",
+    ]
+    assert [event.event_type for event in source.events()][-1] == "session.exported"
+    assert next(event.event_type for event in restored.events()) == "session.imported"
+
+
+@pytest.mark.asyncio
+async def test_session_import_rejects_overwrite_and_agent_limit_mismatch() -> None:
+    snapshot = SessionSnapshot(
+        session_id="portable",
+        messages=(
+            ChatMessage(role="user", content="hello"),
+            ChatMessage(role="assistant", content="hi"),
+        ),
+        request_count=2,
+    )
+    engine = LLMAgentEngine(max_history_messages=2, max_requests_per_session=1)
+    agent = engine.create_agent(name="assistant", model="echo")
+
+    with pytest.raises(InputValidationError, match="request limit"):
+        await agent.import_session(snapshot)
+
+    compatible = SessionSnapshot(
+        session_id="portable",
+        messages=snapshot.messages,
+        request_count=1,
+    )
+    await agent.import_session(compatible)
+    with pytest.raises(InputValidationError, match="already exists"):
+        await agent.import_session(compatible)
+    await agent.import_session(compatible, replace=True)
+
+
+@pytest.mark.asyncio
+async def test_export_requires_an_existing_session() -> None:
+    engine = LLMAgentEngine()
+    agent = engine.create_agent(name="assistant", model="echo")
+    with pytest.raises(InputValidationError, match="does not exist"):
+        await agent.export_session("missing")
 
 
 @pytest.mark.asyncio
@@ -418,6 +613,7 @@ async def test_orchestrator_is_labeled_sequential_and_bounded() -> None:
         ({"max_requests_per_session": 0}, "max_requests_per_session"),
         ({"max_output_tokens": 0}, "max_output_tokens"),
         ({"max_response_chars": 0}, "max_response_chars"),
+        ({"max_events": 0}, "max_events"),
         ({"temperature": 3}, "temperature"),
         ({"default_provider": "bad name"}, "provider name"),
     ],
@@ -439,6 +635,12 @@ def test_agent_and_provider_registration_validate_public_inputs() -> None:
         engine.create_agent(name="good", model="echo", system_prompt="123456")
     with pytest.raises(ConfigurationError, match="not registered"):
         engine.create_agent(name="good", model="test", provider="missing")
+    with pytest.raises(ConfigurationError, match="input_guardrails"):
+        engine.create_agent(
+            name="good",
+            model="echo",
+            input_guardrails=(object(),),  # type: ignore[arg-type]
+        )
 
 
 @pytest.mark.asyncio

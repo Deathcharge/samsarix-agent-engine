@@ -8,6 +8,7 @@ from .engine import Agent, AgentOrchestrator, LLMAgentEngine
 from .errors import (
     BudgetExceededError,
     ConfigurationError,
+    GuardrailError,
     InputValidationError,
     ProviderError,
     SamsarixAgentError,
@@ -16,9 +17,14 @@ from .errors import (
 from .models import (
     AgentMetrics,
     ChatMessage,
+    Guardrail,
+    GuardrailContext,
+    GuardrailResult,
     JsonValue,
     ProviderResponse,
     ProviderStreamChunk,
+    RunEvent,
+    SessionSnapshot,
     parse_json_output,
 )
 from .providers import BaseLLMProvider, EchoProvider, OpenAICompatibleProvider
@@ -34,6 +40,10 @@ __all__ = [
     "ChatMessage",
     "ConfigurationError",
     "EchoProvider",
+    "Guardrail",
+    "GuardrailContext",
+    "GuardrailError",
+    "GuardrailResult",
     "InputValidationError",
     "JsonValue",
     "LLMAgentEngine",
@@ -41,7 +51,9 @@ __all__ = [
     "ProviderError",
     "ProviderResponse",
     "ProviderStreamChunk",
+    "RunEvent",
     "SamsarixAgentError",
+    "SessionSnapshot",
     "StructuredOutputError",
     "__version__",
     "parse_json_output",

@@ -20,6 +20,10 @@ CI verification. See [Productization](docs/PRODUCTIZATION.md).
   fallback for existing custom providers.
 - Parses strict JSON and supports caller-defined structured-output validation
   without requiring Pydantic or another runtime dependency.
+- Runs explicit local input/output guardrails and retains bounded content-free
+  lifecycle events for audit integrations.
+- Exports and imports strict, versioned session snapshots while leaving storage,
+  encryption, and retention policy to the application.
 - Supports custom providers through a four-argument async interface.
 - Includes an explicit deterministic `EchoProvider` so setup can be evaluated
   without credentials, network access, or API cost.
@@ -116,11 +120,61 @@ Invalid JSON or validator failures raise `StructuredOutputError`, count as faile
 requests, and are not added to conversation history. The validator runs once and
 the SDK does not automatically retry or repair model output.
 
+## Guardrails, events, and portable sessions
+
+Guardrails are synchronous local callables. Input guardrails run before request
+budget is consumed or a provider is called. Output guardrails run after the paid
+response is received but before it enters history:
+
+```python
+from samsarix_agent_engine import GuardrailContext, GuardrailResult
+
+
+def reject_secrets(text: str, context: GuardrailContext) -> GuardrailResult:
+    if "private-key" in text.lower():
+        return GuardrailResult(allowed=False, reason=f"blocked {context.stage}")
+    return GuardrailResult(allowed=True)
+
+
+agent = engine.create_agent(
+    name="support-router",
+    model="echo",
+    input_guardrails=(reject_secrets,),
+    output_guardrails=(reject_secrets,),
+)
+```
+
+Output guardrails require the complete response. `agent.stream()` therefore fails
+closed when any output guardrail is configured; use `invoke()` for that agent.
+Guardrail callback failures are sanitized, explicit blocks raise `GuardrailError`,
+and CLI exit code `4` distinguishes them from provider failures.
+
+`agent.events()` returns a bounded local trail containing event type, timestamp,
+agent/session/provider/model identifiers, request number, latency, and error type.
+Events deliberately omit prompt, response, system-prompt, and credential content.
+
+Portable sessions use application-managed storage rather than hidden SDK I/O:
+
+```python
+from samsarix_agent_engine import SessionSnapshot
+
+
+snapshot = await agent.export_session("customer-42")
+serialized = snapshot.to_json()  # store/encrypt according to your policy
+
+restored = SessionSnapshot.from_json(serialized)
+await agent.import_session(restored, session_id="customer-42-restored")
+```
+
+Snapshots are strict, versioned, limited to 1,000 messages and 1,000,000 serialized
+characters, contain successful user/assistant turns plus the consumed request
+count, and never contain API credentials. They are not encrypted by the SDK.
+
 The public API is exported from `samsarix_agent_engine`: `LLMAgentEngine`,
 `Agent`, `AgentOrchestrator`, `BaseLLMProvider`, `EchoProvider`,
 `OpenAICompatibleProvider`, `ChatMessage`, `ProviderResponse`,
 `ProviderStreamChunk`, `JsonValue`, `parse_json_output`, and the documented exception
-classes.
+classes, guardrail/event models, and `SessionSnapshot`.
 
 ## OpenAI-compatible endpoint
 
@@ -151,9 +205,9 @@ absolute HTTP(S) URLs without embedded credentials, query strings, or fragments.
 It does not follow redirects. Applications that let end users select this value
 must add their own destination allowlist and network egress controls.
 
-Use `samsarix-agent --help` and `samsarix-agent run --help` for every option. Exit code
-`2` means invalid input/configuration, `3` means provider failure, and `130` means
-the user cancelled the command.
+Use `samsarix-agent --help` and `samsarix-agent run --help` for every option. Exit
+code `2` means invalid input/configuration, `3` means provider failure, `4` means a
+guardrail blocked or failed, and `130` means the user cancelled the command.
 
 ## Configuration and cost controls
 
@@ -225,8 +279,8 @@ Read [SECURITY.md](SECURITY.md) for trust boundaries and reporting guidance.
 - Alpha: the API may change before `1.0`.
 - Only OpenAI-compatible chat completions are built in; streaming requires an SSE
   implementation compatible with that protocol.
-- No persistent history, tool execution, provider-specific Anthropic support,
-  token estimation, automatic output repair, or automatic provider fallback.
+- No built-in database/storage adapter, tool execution, provider-specific Anthropic
+  support, token estimation, automatic output repair, or automatic provider fallback.
 - The repository contains historical backend extracts that depend on private
   `helix-unified` modules and are not part of this product.
 - The GitHub repository, distribution, and import namespace use Samsarix branding.

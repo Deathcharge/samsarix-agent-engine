@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 from . import __version__
 from .engine import LLMAgentEngine
-from .errors import ConfigurationError, InputValidationError, SamsarixAgentError
+from .errors import ConfigurationError, GuardrailError, InputValidationError, SamsarixAgentError
 from .providers import OpenAICompatibleProvider
 
 
@@ -149,6 +149,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ConfigurationError, InputValidationError) as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2
+    except GuardrailError as exc:
+        print(f"guardrail error: {exc}", file=sys.stderr)
+        return 4
     except SamsarixAgentError as exc:
         print(f"provider error: {exc}", file=sys.stderr)
         return 3

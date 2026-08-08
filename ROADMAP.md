@@ -35,7 +35,9 @@ Current hardening backlog:
 - No proven downstream consumer or live compatible-endpoint smoke test.
 - Strong functional overlap with flagship and other portfolio LLM/agent packages weakens differentiation.
 - Package name/PyPI trusted publisher and actual CI success are unverified.
-- In-memory-only state, non-streaming calls, one protocol, and serialized per-agent turns limit use cases.
+- Built-in durable storage, tool execution, multiple native provider protocols,
+  and parallel turns remain absent; portable session snapshots and bounded native
+  streaming now cover the smallest persistence and interactive-output seams.
 - License transition and provenance are unresolved.
 
 ## Samsarix adoption
