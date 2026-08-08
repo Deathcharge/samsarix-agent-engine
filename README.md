@@ -9,6 +9,10 @@ The package is currently **alpha quality**. Its offline path is usable for local
 evaluation, and its release process remains gated on protected PyPI publishing and
 CI verification. See [Productization](docs/PRODUCTIZATION.md).
 
+Start with [Getting started](docs/GETTING_STARTED.md), then see
+[practical use cases](docs/USE_CASES.md) and the candid
+[competitive position](docs/COMPETITIVE_POSITION.md).
+
 ## What it does
 
 - Creates named agents with a model and system prompt.

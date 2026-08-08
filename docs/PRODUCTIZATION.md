@@ -1,6 +1,6 @@
 # Productization record
 
-Last updated: 2026-07-28
+Last updated: 2026-08-08
 
 ## Current repository assessment
 
@@ -19,8 +19,9 @@ documentation, licensing, examples, and mock-test additions.
 ## Chosen product
 
 Samsarix Agent Engine is a deliberately small Python SDK and CLI for developers
-who want named prompts, bounded in-memory sessions, and a minimal provider extension
-point over an OpenAI-compatible endpoint.
+who want named prompts, bounded sessions, streaming, strict structured output,
+local guardrails/events, portable snapshots, and approval-aware function tools over
+an OpenAI-compatible endpoint.
 
 The primary use case is: install in an empty Python environment, create or run a
 named agent, receive a response, continue a bounded session, inspect local metrics,
@@ -57,8 +58,11 @@ Primary journey:
   support.
 - Make echo an explicit test provider, never a hidden fallback after paid-provider
   failure.
-- Keep history in memory and bounded. Persistence is out of scope for the first
-  release because no existing persistence contract is independently viable.
+- Keep live history in memory and bounded. Expose strict portable snapshots while
+  leaving storage, encryption, access control, and retention to the application.
+- Require approval for tools by default, parse model arguments as bounded strict
+  JSON, execute sequentially, and refuse effects when no final-response request
+  budget remains.
 - Serialize calls per agent to preserve turn ordering. Independent agents can run
   concurrently.
 - Bound prompt size, output request size, sessions, history, per-session requests,
@@ -128,10 +132,13 @@ changelog, security policy, `.env.example`, or coherent package tests existed.
 
 ### P2
 
-- [ ] Native streaming with bounded partial-response handling.
-- [ ] Optional structured-output validation.
+- [x] Native streaming with bounded partial-response handling.
+- [x] Optional structured-output validation.
+- [x] Local guardrails, content-free lifecycle events, and portable snapshots.
+- [x] Approval-aware bounded function tools with deterministic protocol tests.
 - [ ] Provider-specific adapters as optional packages, only when demanded.
 - [ ] Persistent session adapter with an explicit encryption/retention design.
+- [ ] Prove a consumer-owned compatibility fixture and live endpoint smoke matrix.
 - [ ] Remove or relocate the preserved legacy snapshot after owner portfolio review.
 
 ## Implementation checklist
@@ -176,13 +183,17 @@ changelog, security policy, `.env.example`, or coherent package tests existed.
   build/publish jobs, tag/version matching, archive guards, and pinned actions.
 - Removed orphaned root LLM modules and their private imports; Git history retains
   them if portfolio archaeology is needed.
+- Added bounded SSE streaming, strict/caller-validated JSON, local guardrails,
+  content-free events, and versioned portable session snapshots.
+- Added approval-required-by-default function tools with sequential protocol
+  handling and hard request, round, call, argument, and result budgets.
+- Added runnable offline support-triage and approved-support-action proofs plus a
+  current competitive boundary assessment.
 
 ## Deferred and blocked work
 
 External release operations:
 
-- Decide whether to rename the historical GitHub repository slug before registering
-  publisher identity.
 - Register the `samsarix-agent-engine` distribution and configure protected PyPI
   Trusted Publishing. Verification: an authorized PyPI release installs in an
   empty environment.
@@ -194,12 +205,15 @@ the first credible narrow release.
 
 ## Known risks
 
-- OpenAI compatibility varies across providers; the package implements the common
-  non-streaming chat-completions schema only.
+- OpenAI compatibility varies across providers; deterministic tests cover the
+  common chat-completions text, SSE, and function-tool shapes, not every compatible
+  endpoint variation.
 - An application that accepts end-user base URLs can create SSRF risk outside this
   library's operator-trusted configuration model.
-- In-memory state is not durable and can contain prompt/response content until
-  evicted or cleared.
+- Live state is not durable and can contain prompt/response content until evicted
+  or cleared. Exported snapshots are plaintext unless the application encrypts them.
+- Tool effects are not transactional or automatically resumable; handlers must be
+  idempotent and own recovery, and must minimize results sent back to the provider.
 - Agent-level serialization favors ordering over throughput.
 - Legacy source remains visible and may be mistaken for supported code if readers
   ignore the package and boundary documentation.
@@ -225,6 +239,9 @@ unsupported by current evidence.
 - [LiteLLM](https://docs.litellm.ai/) provides 100+ provider translation, routing,
   fallback, and spend tracking. This repository instead keeps one compatible
   protocol and a custom-provider seam.
+- The current comparison and deliberately unbuilt surfaces are recorded in
+  [Competitive position](COMPETITIVE_POSITION.md); runnable adoption patterns and
+  caller responsibilities are in [Practical use cases](USE_CASES.md).
 - Current official GitHub action documentation uses `actions/checkout@v6` and
   `actions/setup-python@v6`; CI pins the current v6 commits and uses read-only
   permissions.
