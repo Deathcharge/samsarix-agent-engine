@@ -312,9 +312,9 @@ python -m twine check dist/*
 ```
 
 The CI workflow is configured to run the same product checks on Python 3.11–3.14
-and verify wheel/sdist contents. The large `agents/` and `services/` directories are preserved legacy
-extractions and are not installed or covered by release claims; see
-[Legacy code](docs/LEGACY_CODE.md).
+and verify wheel/sdist contents. Historical cross-repository `agents/` and
+`services/` snapshots were removed from the current checkout and remain available
+through Git history; see [Legacy code](docs/LEGACY_CODE.md).
 
 ## Architecture
 
@@ -358,8 +358,8 @@ Read [SECURITY.md](SECURITY.md) for trust boundaries and reporting guidance.
 - No built-in database/storage adapter, tool rollback/resume, provider-specific
   Anthropic support, token estimation, automatic output repair, or automatic
   provider fallback.
-- The repository contains historical backend extracts that depend on private
-  `helix-unified` modules and are not part of this product.
+- Historical backend extracts are absent from the current tree and are not part of
+  this product; CI rejects their accidental reintroduction into distributions.
 - The GitHub repository, distribution, and import namespace use Samsarix branding.
   GitHub redirects the historical `helix-hub-shared` repository URL for compatibility.
 

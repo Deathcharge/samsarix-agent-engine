@@ -139,7 +139,8 @@ changelog, security policy, `.env.example`, or coherent package tests existed.
 - [ ] Provider-specific adapters as optional packages, only when demanded.
 - [ ] Persistent session adapter with an explicit encryption/retention design.
 - [ ] Prove a consumer-owned compatibility fixture and live endpoint smoke matrix.
-- [ ] Remove or relocate the preserved legacy snapshot after owner portfolio review.
+- [x] Remove the preserved legacy snapshot after confirming canonical repositories
+  and Git-history recovery.
 
 ## Implementation checklist
 
@@ -189,6 +190,8 @@ changelog, security policy, `.env.example`, or coherent package tests existed.
   handling and hard request, round, call, argument, and result budgets.
 - Added runnable offline support-triage and approved-support-action proofs plus a
   current competitive boundary assessment.
+- Removed 160 tracked `agents/` and `services/` snapshot files so the checkout now
+  represents only this standalone product; commit history retains recovery.
 
 ## Deferred and blocked work
 

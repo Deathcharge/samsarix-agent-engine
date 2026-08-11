@@ -32,7 +32,8 @@ contract before publication or consolidation.
 
 Current hardening backlog:
 
-- 160 legacy files remain in the checkout; 153 are exact current flagship duplicates, creating audit, license, and contributor confusion.
+- [x] Remove 160 non-product legacy snapshot files from `agents/` and `services/`;
+  Git history and the canonical repositories retain recovery paths.
 - No proven downstream consumer or live compatible-endpoint smoke test.
 - Strong functional overlap with flagship and other portfolio LLM/agent packages weakens differentiation.
 - Package name/PyPI trusted publisher and actual CI success are unverified.

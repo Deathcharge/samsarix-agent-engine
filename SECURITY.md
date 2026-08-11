@@ -6,10 +6,9 @@ The supported product surface is the Python package under
 `src/samsarix_agent_engine/` and the `samsarix-agent` CLI. Version `0.1.x` is alpha;
 there is not yet a published, production-supported release.
 
-The root `agents/` and `services/` directories are preserved legacy extracts, are
-not distributed, and should not be deployed from this repository. Security issues
-in those files may still be useful portfolio cleanup reports, but they do not
-describe the supported package unless an actual package path reaches them.
+Historical `agents/` and `services/` extracts are absent from the current tree and
+distributions. Findings against older revisions do not describe the supported
+package unless an actual current package path reaches the affected code.
 
 ## Trust boundaries and invariants
 
