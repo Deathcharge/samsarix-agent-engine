@@ -36,7 +36,9 @@ Current hardening backlog:
   Git history and the canonical repositories retain recovery paths.
 - No proven downstream consumer or live compatible-endpoint smoke test.
 - Strong functional overlap with flagship and other portfolio LLM/agent packages weakens differentiation.
-- Package name/PyPI trusted publisher and actual CI success are unverified.
+- The public index returned no matching `samsarix-agent-engine` distribution on
+  2026-08-10, but project ownership and PyPI Trusted Publishing remain unverified.
+- Hosted CI success for the competitive expansion remains pending the merge PR.
 - Built-in durable storage, resumable or rollback-capable tool workflows, multiple
   native provider protocols, and parallel turns remain absent; portable session
   snapshots, bounded native streaming, and approval-gated function tools now cover
