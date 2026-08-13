@@ -159,6 +159,9 @@ and CLI exit code `4` distinguishes them from provider failures.
 `agent.events()` returns a bounded local trail containing event type, timestamp,
 agent/session/provider/model identifiers, request number, latency, and error type.
 Events deliberately omit prompt, response, system-prompt, and credential content.
+Tool events retain only the registered local tool name (or `unavailable`) and a
+per-agent local correlation ID; provider-selected tool names and call IDs never
+enter the audit trail.
 
 Portable sessions use application-managed storage rather than hidden SDK I/O:
 

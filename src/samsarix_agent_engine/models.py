@@ -209,7 +209,12 @@ Guardrail: TypeAlias = Callable[[str, GuardrailContext], GuardrailResult | bool]
 
 @dataclass(frozen=True, slots=True)
 class RunEvent:
-    """Content-free local audit event for an agent request or session operation."""
+    """Content-free local audit event for an agent request or session operation.
+
+    Tool events use a registered local tool name (or ``unavailable``) and a
+    per-agent local correlation id. Provider-selected tool metadata is never
+    retained in this audit model.
+    """
 
     event_type: RunEventType
     occurred_at: str

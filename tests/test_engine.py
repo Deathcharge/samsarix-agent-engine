@@ -402,13 +402,21 @@ async def test_approved_tool_loop_executes_and_commits_only_final_turn() -> None
         "request.started",
         "request.succeeded",
     ]
+    tool_events = [event for event in agent.events() if event.tool_name is not None]
+    assert {event.tool_name for event in tool_events} == {"lookup_ticket"}
+    assert {event.tool_call_id for event in tool_events} == {"tool-1"}
     assert all("arguments" not in event.as_dict() for event in agent.events())
 
 
 @pytest.mark.asyncio
 async def test_tool_requires_explicit_approval_by_default() -> None:
+    provider_call_id = "PRIVATE_PROMPT_FRAGMENT_ACCOUNT_4729"
     provider = ToolLoopProvider(
-        [ToolProviderResponse(tool_calls=(ToolCall(call_id="call-1", name="act", arguments="{}"),))]
+        [
+            ToolProviderResponse(
+                tool_calls=(ToolCall(call_id=provider_call_id, name="act", arguments="{}"),)
+            )
+        ]
     )
     executed = False
 
@@ -432,6 +440,8 @@ async def test_tool_requires_explicit_approval_by_default() -> None:
 
     assert executed is False
     assert captured.value.tool_name == "act"
+    assert captured.value.tool_call_id == "tool-1"
+    assert provider_call_id not in str(vars(captured.value))
     assert agent.get_metrics()["tool_denials"] == 1
     assert agent.history() == ()
     assert [event.event_type for event in agent.events()] == [
@@ -440,6 +450,10 @@ async def test_tool_requires_explicit_approval_by_default() -> None:
         "tool.denied",
         "request.failed",
     ]
+    tool_events = [event for event in agent.events() if event.tool_name is not None]
+    assert {event.tool_name for event in tool_events} == {"act"}
+    assert {event.tool_call_id for event in tool_events} == {"tool-1"}
+    assert all(provider_call_id not in str(event.as_dict()) for event in agent.events())
 
 
 @pytest.mark.asyncio
@@ -543,9 +557,15 @@ async def test_tool_loop_rejects_unavailable_or_invalid_calls(
     engine.register_provider("tools", provider)
     agent = engine.create_agent(name="assistant", model="test", provider="tools")
 
-    with pytest.raises(ToolExecutionError, match=message):
+    with pytest.raises(ToolExecutionError, match=message) as captured:
         await agent.run_tools("act", [tool])
     assert agent.get_metrics()["tool_failures"] == 1
+    tool_events = [event for event in agent.events() if event.tool_name is not None]
+    assert {event.tool_call_id for event in tool_events} == {"tool-1"}
+    if call.name == "missing":
+        assert {event.tool_name for event in tool_events} == {"unavailable"}
+        assert all(call.name not in str(event.as_dict()) for event in agent.events())
+        assert call.name not in str(captured.value)
 
 
 @pytest.mark.asyncio

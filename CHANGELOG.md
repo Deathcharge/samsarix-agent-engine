@@ -35,6 +35,12 @@ once releases begin.
 - Environment-protected PyPI Trusted Publishing workflow with isolated build and
   publish jobs, artifact guards, tag/version matching, and no long-lived token.
 
+### Security
+
+- Tool lifecycle audit events use registered local names and per-agent local
+  correlation IDs, preventing provider-selected tool metadata from entering the
+  content-free event trail.
+
 ### Removed
 
 - Orphaned root LLM modules that required private `helix-unified` imports.

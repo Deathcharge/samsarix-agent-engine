@@ -28,7 +28,9 @@ package unless an actual current package path reaches the affected code.
   credentials, are size/version/schema checked, and leave encryption, retention,
   access control, and storage to the calling application.
 - Audit events must not contain prompt, response, system-prompt, or credential
-  content.
+  content. Tool-event metadata must be locally generated or selected from the
+  registered tool set, never copied from provider-selected call identifiers or
+  unavailable tool names.
 - Complete-output guardrails must fail closed for streaming rather than expose
   content before inspection.
 - Tool definitions and handlers are trusted local application code. Model-selected

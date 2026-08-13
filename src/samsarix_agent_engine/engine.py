@@ -104,6 +104,7 @@ class Agent:
         self._request_counts: dict[str, int] = {}
         self._metrics = AgentMetrics()
         self._events: deque[RunEvent] = deque(maxlen=max_events)
+        self._event_tool_sequence = 0
         self._lock = asyncio.Lock()
 
     async def invoke(self, prompt: str, *, session_id: str = "default") -> str:
@@ -699,14 +700,17 @@ class Agent:
         round_number: int,
         request_number: int,
     ) -> ToolMessage:
+        tool = tools_by_name.get(call.name)
+        self._event_tool_sequence += 1
+        event_tool_name = tool.name if tool is not None else "unavailable"
+        event_tool_call_id = f"tool-{self._event_tool_sequence}"
         self._record_event(
             "tool.requested",
             session_id=session_id,
             request_number=request_number,
-            tool_name=call.name,
-            tool_call_id=call.call_id,
+            tool_name=event_tool_name,
+            tool_call_id=event_tool_call_id,
         )
-        tool = tools_by_name.get(call.name)
         if tool is None:
             self._metrics.tool_failures += 1
             self._record_event(
@@ -714,10 +718,10 @@ class Agent:
                 session_id=session_id,
                 request_number=request_number,
                 error_type="UnavailableToolError",
-                tool_name=call.name,
-                tool_call_id=call.call_id,
+                tool_name=event_tool_name,
+                tool_call_id=event_tool_call_id,
             )
-            raise ToolExecutionError(f"model requested unavailable tool {call.name!r}")
+            raise ToolExecutionError("model requested an unavailable tool")
 
         try:
             parsed_arguments = parse_json_output(call.arguments, max_depth=32)
@@ -728,8 +732,8 @@ class Agent:
                 session_id=session_id,
                 request_number=request_number,
                 error_type="InvalidToolArguments",
-                tool_name=call.name,
-                tool_call_id=call.call_id,
+                tool_name=event_tool_name,
+                tool_call_id=event_tool_call_id,
             )
             raise ToolExecutionError("model supplied invalid bounded JSON tool arguments") from exc
         if not isinstance(parsed_arguments, dict):
@@ -739,14 +743,21 @@ class Agent:
                 session_id=session_id,
                 request_number=request_number,
                 error_type="InvalidToolArguments",
-                tool_name=call.name,
-                tool_call_id=call.call_id,
+                tool_name=event_tool_name,
+                tool_call_id=event_tool_call_id,
             )
             raise ToolExecutionError("model tool arguments must be a JSON object")
 
         if tool.requires_approval:
             if approval_handler is None:
-                self._deny_tool(call, session_id, request_number, reason=None)
+                self._deny_tool(
+                    call,
+                    session_id,
+                    request_number,
+                    event_tool_name=event_tool_name,
+                    event_tool_call_id=event_tool_call_id,
+                    reason=None,
+                )
             request = ApprovalRequest(
                 tool_name=call.name,
                 tool_call_id=call.call_id,
@@ -774,22 +785,29 @@ class Agent:
                     session_id=session_id,
                     request_number=request_number,
                     error_type="ApprovalHandlerError",
-                    tool_name=call.name,
-                    tool_call_id=call.call_id,
+                    tool_name=event_tool_name,
+                    tool_call_id=event_tool_call_id,
                 )
                 raise ToolApprovalError(
                     "tool approval handler failed",
-                    tool_name=call.name,
-                    tool_call_id=call.call_id,
+                    tool_name=event_tool_name,
+                    tool_call_id=event_tool_call_id,
                 ) from exc
             if not decision.approved:
-                self._deny_tool(call, session_id, request_number, reason=decision.reason)
+                self._deny_tool(
+                    call,
+                    session_id,
+                    request_number,
+                    event_tool_name=event_tool_name,
+                    event_tool_call_id=event_tool_call_id,
+                    reason=decision.reason,
+                )
             self._record_event(
                 "tool.approved",
                 session_id=session_id,
                 request_number=request_number,
-                tool_name=call.name,
-                tool_call_id=call.call_id,
+                tool_name=event_tool_name,
+                tool_call_id=event_tool_call_id,
             )
 
         try:
@@ -813,8 +831,8 @@ class Agent:
                 session_id=session_id,
                 request_number=request_number,
                 error_type="ToolExecutionError",
-                tool_name=call.name,
-                tool_call_id=call.call_id,
+                tool_name=event_tool_name,
+                tool_call_id=event_tool_call_id,
             )
             raise ToolExecutionError("tool handler failed or returned invalid JSON") from exc
         if len(serialized) > self._max_tool_result_chars:
@@ -824,8 +842,8 @@ class Agent:
                 session_id=session_id,
                 request_number=request_number,
                 error_type="ToolResultBudgetError",
-                tool_name=call.name,
-                tool_call_id=call.call_id,
+                tool_name=event_tool_name,
+                tool_call_id=event_tool_call_id,
             )
             raise BudgetExceededError("tool result exceeded the configured character limit")
 
@@ -834,8 +852,8 @@ class Agent:
             "tool.succeeded",
             session_id=session_id,
             request_number=request_number,
-            tool_name=call.name,
-            tool_call_id=call.call_id,
+            tool_name=event_tool_name,
+            tool_call_id=event_tool_call_id,
         )
         return ToolMessage(role="tool", content=serialized, tool_call_id=call.call_id)
 
@@ -845,6 +863,8 @@ class Agent:
         session_id: str,
         request_number: int,
         *,
+        event_tool_name: str,
+        event_tool_call_id: str,
         reason: str | None,
     ) -> NoReturn:
         self._metrics.tool_denials += 1
@@ -853,14 +873,14 @@ class Agent:
             session_id=session_id,
             request_number=request_number,
             error_type="ToolApprovalError",
-            tool_name=call.name,
-            tool_call_id=call.call_id,
+            tool_name=event_tool_name,
+            tool_call_id=event_tool_call_id,
         )
         suffix = f": {reason}" if reason else ""
         raise ToolApprovalError(
             f"tool call requires approval or was denied{suffix}",
-            tool_name=call.name,
-            tool_call_id=call.call_id,
+            tool_name=event_tool_name,
+            tool_call_id=event_tool_call_id,
         )
 
     def _record_event(
