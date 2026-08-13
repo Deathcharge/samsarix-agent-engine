@@ -6,10 +6,11 @@ This roadmap separates four gates: merge, release, publication, and flagship ado
 
 Portfolio role: **reusable library or sdk**. Keep this as a small, independently versioned package. Samsarix Unified should consume it only through a public API adapter; private monorepo imports and copied implementations are out of scope.
 Repository identity: `Deathcharge/samsarix-agent-engine` (renamed 2026-07-29;
-consolidation candidate).
+standalone SDK candidate).
 
-Current disposition: Keep the productized default stable while testing whether this
-bounded runtime earns a canonical role before any consolidation or publication.
+Current disposition: Keep the SDK independently installable and test whether its
+bounded runtime earns a canonical portfolio role through a public consumer
+contract before publication or consolidation.
 
 ## Stabilize the productized default
 
@@ -31,12 +32,19 @@ bounded runtime earns a canonical role before any consolidation or publication.
 
 Current hardening backlog:
 
-- 160 legacy files remain in the checkout; 153 are exact current flagship duplicates, creating audit, license, and contributor confusion.
+- [x] Remove 160 non-product legacy snapshot files from `agents/` and `services/`;
+  Git history and the canonical repositories retain recovery paths.
 - No proven downstream consumer or live compatible-endpoint smoke test.
 - Strong functional overlap with flagship and other portfolio LLM/agent packages weakens differentiation.
-- Package name/PyPI trusted publisher and actual CI success are unverified.
-- In-memory-only state, non-streaming calls, one protocol, and serialized per-agent turns limit use cases.
-- License transition and provenance are unresolved.
+- The public index returned no matching `samsarix-agent-engine` distribution on
+  2026-08-10, but project ownership and PyPI Trusted Publishing remain unverified.
+- Hosted CI success for the competitive expansion remains pending the merge PR.
+- Built-in durable storage, resumable or rollback-capable tool workflows, multiple
+  native provider protocols, and parallel turns remain absent; portable session
+  snapshots, bounded native streaming, and approval-gated function tools now cover
+  the smallest persistence, interactive-output, and safe-action seams.
+- The current supported tree is consistently MPL-2.0; owner confirmation of
+  historical contribution provenance still gates public release.
 
 ## Samsarix adoption
 

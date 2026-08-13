@@ -6,10 +6,9 @@ The supported product surface is the Python package under
 `src/samsarix_agent_engine/` and the `samsarix-agent` CLI. Version `0.1.x` is alpha;
 there is not yet a published, production-supported release.
 
-The root `agents/` and `services/` directories are preserved legacy extracts, are
-not distributed, and should not be deployed from this repository. Security issues
-in those files may still be useful portfolio cleanup reports, but they do not
-describe the supported package unless an actual package path reaches them.
+Historical `agents/` and `services/` extracts are absent from the current tree and
+distributions. Findings against older revisions do not describe the supported
+package unless an actual current package path reaches the affected code.
 
 ## Trust boundaries and invariants
 
@@ -24,8 +23,25 @@ describe the supported package unless an actual package path reaches them.
   provider.
 - Every network request must be bounded by time, retry count, response size, and
   cancellation. Redirects are disabled by default.
-- Conversation and metrics state must remain bounded and process-local unless a
-  future explicit persistence feature defines stronger privacy controls.
+- Conversation, audit-event, and metrics state must remain bounded and process-local.
+  Portable session snapshots are created only through an explicit call, contain no
+  credentials, are size/version/schema checked, and leave encryption, retention,
+  access control, and storage to the calling application.
+- Audit events must not contain prompt, response, system-prompt, or credential
+  content. Tool-event metadata must be locally generated or selected from the
+  registered tool set, never copied from provider-selected call identifiers or
+  unavailable tool names.
+- Complete-output guardrails must fail closed for streaming rather than expose
+  content before inspection.
+- Tool definitions and handlers are trusted local application code. Model-selected
+  tool names and arguments are untrusted; arguments must remain bounded strict JSON,
+  and each handler must validate its own fields before any effect.
+- Effectful tools require explicit caller-owned approval by default. A tool must not
+  execute when approval is absent or denied, or when insufficient request, round,
+  or call budget remains to obtain the final model response.
+- Tool results are sent to the explicitly configured model provider. Handlers must
+  minimize and redact results, never return credentials, and use application-owned
+  idempotency and recovery for effects that cannot be rolled back.
 - Multi-agent orchestration must have a hard call-amplification limit.
 
 ## Reporting

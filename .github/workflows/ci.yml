@@ -92,8 +92,14 @@ jobs:
           sdist_required_suffixes = {
               "/CITATION.cff",
               "/LICENSING.md",
+              "/docs/COMPETITIVE_POSITION.md",
               "/docs/GETTING_STARTED.md",
+              "/docs/REMOVED_SNAPSHOT_FILES.md",
+              "/docs/SNAPSHOT_DISPOSITION.md",
+              "/docs/USE_CASES.md",
+              "/examples/approved_support_action.py",
               "/examples/basic_agent.py",
+              "/examples/support_triage.py",
           }
           missing_sdist = {
               suffix

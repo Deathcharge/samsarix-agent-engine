@@ -15,14 +15,22 @@ import asyncio
 import json
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
 
-from .errors import ConfigurationError, ProviderError
-from .models import ChatMessage, ProviderResponse
+from .errors import ConfigurationError, InputValidationError, ProviderError
+from .models import (
+    ChatMessage,
+    ProviderResponse,
+    ProviderStreamChunk,
+    ToolCall,
+    ToolDefinition,
+    ToolMessage,
+    ToolProviderResponse,
+)
 
 _RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 
@@ -44,6 +52,51 @@ class BaseLLMProvider(ABC):
     async def close(self) -> None:
         """Release provider resources. Stateless providers need no cleanup."""
         return None
+
+    async def invoke_tools(
+        self,
+        messages: Sequence[ToolMessage],
+        model: str,
+        tools: Sequence[ToolDefinition],
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> ToolProviderResponse:
+        """Return tool calls or final text; providers opt in by overriding this method."""
+
+        del messages, model, tools, max_tokens, temperature
+        raise ProviderError("provider does not support tool calls")
+
+    async def stream(
+        self,
+        messages: Sequence[ChatMessage],
+        model: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> AsyncIterator[ProviderStreamChunk]:
+        """Stream normalized events, falling back to one complete invocation.
+
+        Existing custom providers remain compatible without implementing native
+        streaming. Providers that override this method must emit exactly one final
+        chunk.
+        """
+
+        response = await self.invoke(
+            messages,
+            model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        if isinstance(response, str):
+            response = ProviderResponse(content=response, model=model)
+        yield ProviderStreamChunk(
+            delta=response.content,
+            final=True,
+            model=response.model,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+        )
 
 
 class EchoProvider(BaseLLMProvider):
@@ -146,6 +199,128 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             "stream": False,
         }
 
+        response = await self._send_with_retries(payload)
+        try:
+            try:
+                data = await self._read_bounded_json(response)
+            except httpx.TimeoutException as exc:
+                raise ProviderError("provider response timed out", retryable=True) from exc
+            except httpx.RequestError as exc:
+                raise ProviderError("provider response failed", retryable=True) from exc
+        finally:
+            await response.aclose()
+
+        return self._normalize_response(data, requested_model=model)
+
+    async def invoke_tools(
+        self,
+        messages: Sequence[ToolMessage],
+        model: str,
+        tools: Sequence[ToolDefinition],
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> ToolProviderResponse:
+        """Request OpenAI-compatible function calls with parallel execution disabled."""
+
+        payload = {
+            "model": model,
+            "messages": [message.as_dict() for message in messages],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": False,
+            "tools": [tool.as_dict() for tool in tools],
+            "tool_choice": "auto",
+            "parallel_tool_calls": False,
+        }
+        response = await self._send_with_retries(payload)
+        try:
+            try:
+                data = await self._read_bounded_json(response)
+            except httpx.TimeoutException as exc:
+                raise ProviderError("provider response timed out", retryable=True) from exc
+            except httpx.RequestError as exc:
+                raise ProviderError("provider response failed", retryable=True) from exc
+        finally:
+            await response.aclose()
+        return self._normalize_tool_response(data, requested_model=model)
+
+    async def stream(
+        self,
+        messages: Sequence[ChatMessage],
+        model: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> AsyncIterator[ProviderStreamChunk]:
+        """Stream bounded text deltas from an OpenAI-compatible SSE response."""
+
+        payload = {
+            "model": model,
+            "messages": [message.as_dict() for message in messages],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+        }
+        response = await self._send_with_retries(payload)
+        emitted = False
+        served_model = model
+        input_tokens: int | None = None
+        output_tokens: int | None = None
+        try:
+            try:
+                async for data in self._iter_sse_json(response):
+                    event_model = data.get("model")
+                    if isinstance(event_model, str):
+                        served_model = event_model
+                    usage = data.get("usage")
+                    if isinstance(usage, dict):
+                        prompt_tokens = usage.get("prompt_tokens")
+                        completion_tokens = usage.get("completion_tokens")
+                        if isinstance(prompt_tokens, int) and not isinstance(prompt_tokens, bool):
+                            input_tokens = prompt_tokens
+                        if isinstance(completion_tokens, int) and not isinstance(
+                            completion_tokens, bool
+                        ):
+                            output_tokens = completion_tokens
+
+                    choices = data.get("choices")
+                    if choices in (None, []):
+                        continue
+                    if not isinstance(choices, list) or not isinstance(choices[0], dict):
+                        raise ProviderError(
+                            "provider stream did not match the chat completion schema"
+                        )
+                    delta_object = choices[0].get("delta")
+                    if not isinstance(delta_object, dict):
+                        raise ProviderError(
+                            "provider stream did not match the chat completion schema"
+                        )
+                    delta = delta_object.get("content")
+                    if delta is None:
+                        continue
+                    if not isinstance(delta, str):
+                        raise ProviderError("provider stream contained invalid text content")
+                    if delta:
+                        emitted = True
+                        yield ProviderStreamChunk(delta=delta, model=served_model)
+            except httpx.TimeoutException as exc:
+                raise ProviderError("provider stream timed out", retryable=True) from exc
+            except httpx.RequestError as exc:
+                raise ProviderError("provider stream failed", retryable=True) from exc
+        finally:
+            await response.aclose()
+
+        if not emitted:
+            raise ProviderError("provider stream contained no text content")
+        yield ProviderStreamChunk(
+            final=True,
+            model=served_model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+
+    async def _send_with_retries(self, payload: dict[str, Any]) -> httpx.Response:
         for attempt in range(self.max_retries + 1):
             try:
                 request = self._client.build_request("POST", self.endpoint, json=payload)
@@ -161,28 +336,70 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                     continue
                 raise ProviderError("provider request failed", retryable=True) from exc
 
-            try:
-                status = response.status_code
-                if status in _RETRYABLE_STATUS_CODES and attempt < self.max_retries:
-                    retry_after = self._bounded_retry_after(response.headers.get("retry-after"))
-                    await response.aclose()
-                    await self._sleep_before_retry(attempt, retry_after)
-                    continue
-                if not 200 <= status < 300:
-                    request_id = self._safe_request_id(response.headers.get("x-request-id"))
-                    suffix = f" (request {request_id})" if request_id else ""
-                    raise ProviderError(
-                        f"provider returned HTTP {status}{suffix}",
-                        status_code=status,
-                        retryable=status in _RETRYABLE_STATUS_CODES,
-                    )
-                data = await self._read_bounded_json(response)
-            finally:
+            status = response.status_code
+            if status in _RETRYABLE_STATUS_CODES and attempt < self.max_retries:
+                retry_after = self._bounded_retry_after(response.headers.get("retry-after"))
                 await response.aclose()
-
-            return self._normalize_response(data, requested_model=model)
+                await self._sleep_before_retry(attempt, retry_after)
+                continue
+            if not 200 <= status < 300:
+                request_id = self._safe_request_id(response.headers.get("x-request-id"))
+                suffix = f" (request {request_id})" if request_id else ""
+                await response.aclose()
+                raise ProviderError(
+                    f"provider returned HTTP {status}{suffix}",
+                    status_code=status,
+                    retryable=status in _RETRYABLE_STATUS_CODES,
+                )
+            return response
 
         raise ProviderError("provider request exhausted its retry budget", retryable=True)
+
+    async def _iter_sse_json(self, response: httpx.Response) -> AsyncIterator[dict[str, Any]]:
+        buffer = bytearray()
+        event_data: list[bytes] = []
+        size = 0
+
+        async for chunk in response.aiter_bytes():
+            size += len(chunk)
+            if size > self.max_response_bytes:
+                raise ProviderError("provider stream exceeded the configured size limit")
+            buffer.extend(chunk)
+            while True:
+                newline = buffer.find(b"\n")
+                if newline < 0:
+                    break
+                line = bytes(buffer[:newline]).rstrip(b"\r")
+                del buffer[: newline + 1]
+                if not line:
+                    if event_data:
+                        payload = b"\n".join(event_data)
+                        event_data.clear()
+                        if payload.strip() == b"[DONE]":
+                            return
+                        yield self._decode_sse_payload(payload)
+                    continue
+                if line.startswith(b"data:"):
+                    event_data.append(line[5:].lstrip())
+
+        if buffer:
+            line = bytes(buffer).rstrip(b"\r")
+            if line.startswith(b"data:"):
+                event_data.append(line[5:].lstrip())
+        if event_data:
+            payload = b"\n".join(event_data)
+            if payload.strip() != b"[DONE]":
+                yield self._decode_sse_payload(payload)
+
+    @staticmethod
+    def _decode_sse_payload(payload: bytes) -> dict[str, Any]:
+        try:
+            data: Any = json.loads(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProviderError("provider stream contained invalid JSON") from exc
+        if not isinstance(data, dict):
+            raise ProviderError("provider stream contained an invalid event")
+        return data
 
     async def _read_bounded_json(self, response: httpx.Response) -> Any:
         chunks: list[bytes] = []
@@ -219,6 +436,70 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             input_tokens=input_tokens if isinstance(input_tokens, int) else None,
             output_tokens=output_tokens if isinstance(output_tokens, int) else None,
         )
+
+    @staticmethod
+    def _normalize_tool_response(data: Any, *, requested_model: str) -> ToolProviderResponse:
+        try:
+            message = data["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ProviderError(
+                "provider response did not match the tool completion schema"
+            ) from exc
+        if not isinstance(message, dict):
+            raise ProviderError("provider response did not match the tool completion schema")
+        content = message.get("content")
+        if content is not None and (not isinstance(content, str) or not content):
+            raise ProviderError("provider tool response contained invalid text content")
+        raw_calls = message.get("tool_calls") or []
+        if not isinstance(raw_calls, list):
+            raise ProviderError("provider response did not match the tool completion schema")
+        calls: list[ToolCall] = []
+        for raw_call in raw_calls:
+            try:
+                if not isinstance(raw_call, dict) or raw_call.get("type") != "function":
+                    raise TypeError
+                function = raw_call["function"]
+                if not isinstance(function, dict):
+                    raise TypeError
+                call = ToolCall(
+                    call_id=raw_call["id"],
+                    name=function["name"],
+                    arguments=function["arguments"],
+                )
+            except (KeyError, TypeError, InputValidationError) as exc:
+                raise ProviderError(
+                    "provider response contained an invalid function tool call"
+                ) from exc
+            calls.append(call)
+
+        usage = data.get("usage", {}) if isinstance(data, dict) else {}
+        input_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+        output_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+        served_model = (
+            data.get("model", requested_model) if isinstance(data, dict) else requested_model
+        )
+        try:
+            return ToolProviderResponse(
+                content=content,
+                tool_calls=tuple(calls),
+                model=served_model if isinstance(served_model, str) else requested_model,
+                input_tokens=(
+                    input_tokens
+                    if isinstance(input_tokens, int)
+                    and not isinstance(input_tokens, bool)
+                    and input_tokens >= 0
+                    else None
+                ),
+                output_tokens=(
+                    output_tokens
+                    if isinstance(output_tokens, int)
+                    and not isinstance(output_tokens, bool)
+                    and output_tokens >= 0
+                    else None
+                ),
+            )
+        except InputValidationError as exc:
+            raise ProviderError("provider tool response contained no usable output") from exc
 
     @staticmethod
     def _bounded_retry_after(value: str | None) -> float | None:

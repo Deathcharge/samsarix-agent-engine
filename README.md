@@ -9,6 +9,10 @@ The package is currently **alpha quality**. Its offline path is usable for local
 evaluation, and its release process remains gated on protected PyPI publishing and
 CI verification. See [Productization](docs/PRODUCTIZATION.md).
 
+Start with [Getting started](docs/GETTING_STARTED.md), then see
+[practical use cases](docs/USE_CASES.md) and the candid
+[competitive position](docs/COMPETITIVE_POSITION.md).
+
 ## What it does
 
 - Creates named agents with a model and system prompt.
@@ -16,12 +20,23 @@ CI verification. See [Productization](docs/PRODUCTIZATION.md).
 - Enforces input, response, history, session, output-token, retry, and request-count limits.
 - Calls one OpenAI-compatible `chat/completions` endpoint with bounded retries,
   timeouts, response size, and no redirect following.
-- Supports custom providers through a four-argument async interface.
+- Streams bounded text deltas from compatible SSE endpoints, with an invocation
+  fallback for existing custom providers.
+- Parses strict JSON and supports caller-defined structured-output validation
+  without requiring Pydantic or another runtime dependency.
+- Runs explicit local input/output guardrails and retains bounded content-free
+  lifecycle events for audit integrations.
+- Exports and imports strict, versioned session snapshots while leaving storage,
+  encryption, and retention policy to the application.
+- Runs opt-in function tools sequentially under explicit approval and call, round,
+  argument, result, and request budgets; approval is required by default.
+- Supports custom providers through a minimal async interface, with a separate
+  opt-in method for providers that support function tools.
 - Includes an explicit deterministic `EchoProvider` so setup can be evaluated
   without credentials, network access, or API cost.
 - Exposes meaningful CLI exit codes and JSON output for automation.
 
-It does not execute tools, persist conversations, provide authentication, host an
+It does not persist conversations automatically, provide authentication, host an
 API, estimate provider bills, or silently fall back to another paid provider.
 
 ## Fastest successful setup
@@ -69,10 +84,173 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+Stream a response while retaining history only after the stream completes:
+
+```python
+async for delta in agent.stream("Draft a short release note", session_id="demo"):
+    print(delta, end="", flush=True)
+```
+
+Require strict JSON, then validate it into an application type:
+
+```python
+from dataclasses import dataclass
+
+from samsarix_agent_engine import JsonValue
+
+
+@dataclass(frozen=True)
+class TicketRoute:
+    queue: str
+    priority: int
+
+
+def validate_route(value: JsonValue) -> TicketRoute:
+    if not isinstance(value, dict):
+        raise ValueError("expected an object")
+    queue = value.get("queue")
+    priority = value.get("priority")
+    if not isinstance(queue, str):
+        raise ValueError("queue must be a string")
+    if isinstance(priority, bool) or not isinstance(priority, int):
+        raise ValueError("priority must be an integer")
+    return TicketRoute(queue=queue, priority=priority)
+
+
+route = await agent.invoke_structured(
+    'Return only JSON like {"queue":"billing","priority":2}',
+    validate_route,
+)
+```
+
+Invalid JSON or validator failures raise `StructuredOutputError`, count as failed
+requests, and are not added to conversation history. The validator runs once and
+the SDK does not automatically retry or repair model output.
+
+## Guardrails, events, and portable sessions
+
+Guardrails are synchronous local callables. Input guardrails run before request
+budget is consumed or a provider is called. Output guardrails run after the paid
+response is received but before it enters history:
+
+```python
+from samsarix_agent_engine import GuardrailContext, GuardrailResult
+
+
+def reject_secrets(text: str, context: GuardrailContext) -> GuardrailResult:
+    if "private-key" in text.lower():
+        return GuardrailResult(allowed=False, reason=f"blocked {context.stage}")
+    return GuardrailResult(allowed=True)
+
+
+agent = engine.create_agent(
+    name="support-router",
+    model="echo",
+    input_guardrails=(reject_secrets,),
+    output_guardrails=(reject_secrets,),
+)
+```
+
+Output guardrails require the complete response. `agent.stream()` therefore fails
+closed when any output guardrail is configured; use `invoke()` for that agent.
+Guardrail callback failures are sanitized, explicit blocks raise `GuardrailError`,
+and CLI exit code `4` distinguishes them from provider failures.
+
+`agent.events()` returns a bounded local trail containing event type, timestamp,
+agent/session/provider/model identifiers, request number, latency, and error type.
+Events deliberately omit prompt, response, system-prompt, and credential content.
+Tool events retain only the registered local tool name (or `unavailable`) and a
+per-agent local correlation ID; provider-selected tool names and call IDs never
+enter the audit trail.
+
+Portable sessions use application-managed storage rather than hidden SDK I/O:
+
+```python
+from samsarix_agent_engine import SessionSnapshot
+
+
+snapshot = await agent.export_session("customer-42")
+serialized = snapshot.to_json()  # store/encrypt according to your policy
+
+restored = SessionSnapshot.from_json(serialized)
+await agent.import_session(restored, session_id="customer-42-restored")
+```
+
+Snapshots are strict, versioned, limited to 1,000 messages and 1,000,000 serialized
+characters, contain successful user/assistant turns plus the consumed request
+count, and never contain API credentials. They are not encrypted by the SDK.
+
+## Approval-aware tools
+
+Tools are local application code and are never enabled implicitly. Each definition
+has a bounded JSON Schema, a handler, and `requires_approval=True` by default.
+`run_tools()` requires a tool-capable provider such as the built-in
+`OpenAICompatibleProvider`; `EchoProvider` deliberately rejects tool calls. In this
+excerpt, `agent` is configured with that network provider:
+
+```python
+from samsarix_agent_engine import (
+    ApprovalDecision,
+    ApprovalRequest,
+    JsonValue,
+    ToolDefinition,
+)
+
+
+def close_ticket(arguments: dict[str, JsonValue]) -> JsonValue:
+    ticket_id = arguments.get("ticket_id")
+    if not isinstance(ticket_id, str):
+        raise ValueError("ticket_id is required")
+    # Make real effectful handlers idempotent before calling an external system.
+    return {"ticket_id": ticket_id, "status": "closed"}
+
+
+async def approve(request: ApprovalRequest) -> ApprovalDecision:
+    print(f"Approve {request.tool_name} with {request.arguments}?")
+    return ApprovalDecision(approved=False, reason="demo denies effects")
+
+
+tool = ToolDefinition(
+    name="close_ticket",
+    description="Close a support ticket after operator approval.",
+    parameters={
+        "type": "object",
+        "properties": {"ticket_id": {"type": "string"}},
+        "required": ["ticket_id"],
+        "additionalProperties": False,
+    },
+    handler=close_ticket,
+)
+
+answer = await agent.run_tools(
+    "Close ticket T-42",
+    [tool],
+    approval_handler=approve,
+    session_id="operator-demo",
+)
+```
+
+The network provider sends strict function schemas and requests sequential rather
+than parallel calls. Compatible endpoints can still return unexpected arguments,
+so handlers must validate every field before producing an effect. Missing approval
+fails before handler execution. Set `requires_approval=False` only for deliberately
+unattended tools, normally read-only operations.
+
+The default loop permits four model rounds and eight successful tool calls, while
+the session request budget independently caps model calls. The engine refuses to
+execute a tool unless enough model-request budget remains to consume its result.
+Arguments and tool results are strict bounded JSON. Tool results are sent back to
+the configured model provider, so handlers must return a minimal redacted result;
+never return credentials or unnecessary private records. Effects are not rolled
+back if a later provider call fails, so effectful handlers should use idempotency
+keys and application-owned recovery.
+
 The public API is exported from `samsarix_agent_engine`: `LLMAgentEngine`,
 `Agent`, `AgentOrchestrator`, `BaseLLMProvider`, `EchoProvider`,
-`OpenAICompatibleProvider`, `ChatMessage`, `ProviderResponse`, and the documented
-exception classes.
+`OpenAICompatibleProvider`, `ChatMessage`, `ProviderResponse`,
+`ProviderStreamChunk`, `JsonValue`, `parse_json_output`, tool definitions/messages,
+approval models, the documented exception classes, guardrail/event models, and
+`SessionSnapshot`.
 
 ## OpenAI-compatible endpoint
 
@@ -95,23 +273,27 @@ samsarix-agent run "health check" \
   --json
 ```
 
+Use `--stream` for live text or `--expect-json` to reject a non-JSON response and
+write only the parsed JSON value. These output modes are mutually exclusive.
+
 `--base-url` is trusted developer/operator configuration. The client accepts only
 absolute HTTP(S) URLs without embedded credentials, query strings, or fragments.
 It does not follow redirects. Applications that let end users select this value
 must add their own destination allowlist and network egress controls.
 
-Use `samsarix-agent --help` and `samsarix-agent run --help` for every option. Exit code
-`2` means invalid input/configuration, `3` means provider failure, and `130` means
-the user cancelled the command.
+Use `samsarix-agent --help` and `samsarix-agent run --help` for every option. Exit
+code `2` means invalid input/configuration, `3` means provider failure, `4` means a
+guardrail blocked or failed, and `130` means the user cancelled the command.
 
 ## Configuration and cost controls
 
 The engine defaults to 20 retained history messages, 100 sessions, 20,000 input
 characters, 1,024 requested output tokens, and 100 requests per session. The
-default retained response limit is 200,000 characters. The OpenAI-compatible
-provider defaults to a 30-second timeout, two retries, no
-redirects, and a 2 MB response cap. All limits are configurable within guarded
-ranges.
+default retained response limit is 200,000 characters. Tool loops default to four
+model rounds, eight tool calls, and 20,000 characters each for arguments and
+results. The OpenAI-compatible provider defaults to a 30-second timeout, two
+retries, no redirects, and a 2 MB response cap. All limits are configurable within
+guarded ranges.
 
 These are local safety limits, not provider quotas. A two-agent, three-iteration
 orchestration performs six provider calls. The maximum built-in orchestration is
@@ -133,9 +315,9 @@ python -m twine check dist/*
 ```
 
 The CI workflow is configured to run the same product checks on Python 3.11–3.14
-and verify wheel/sdist contents. The large `agents/` and `services/` directories are preserved legacy
-extractions and are not installed or covered by release claims; see
-[Legacy code](docs/LEGACY_CODE.md).
+and verify wheel/sdist contents. Historical cross-repository `agents/` and
+`services/` snapshots were removed from the current checkout and remain available
+through Git history; see [Legacy code](docs/LEGACY_CODE.md).
 
 ## Architecture
 
@@ -148,13 +330,13 @@ Agent ---------- validated input, session history, metrics, request budget
       |
 BaseLLMProvider
       +-- EchoProvider (offline setup/test double)
-      +-- OpenAICompatibleProvider (bounded HTTP client)
+      +-- OpenAICompatibleProvider (bounded HTTP/SSE/function-tool client)
       +-- application-defined provider
 ```
 
-Conversation state is process-local and is lost on restart. Each `Agent`
-serializes its own invocations so turns cannot be reordered; use separate agents
-for independent concurrency.
+Conversation state is process-local and is lost on restart unless the application
+explicitly exports a session snapshot. Each `Agent` serializes its own invocations
+so turns cannot be reordered; use separate agents for independent concurrency.
 
 ## Security and privacy
 
@@ -164,7 +346,9 @@ for independent concurrency.
 - HTTP error messages omit response bodies and transport exception text.
 - No telemetry is collected.
 - Conversation history remains in memory until evicted or cleared.
-- Model output is untrusted data; this package never executes it.
+- Model output is untrusted data and is never evaluated as code. Explicit tool
+  loops can dispatch only caller-registered handlers after bounded JSON parsing
+  and the configured approval policy.
 - Plain-text CLI output replaces terminal control characters; JSON mode escapes them.
 
 Read [SECURITY.md](SECURITY.md) for trust boundaries and reporting guidance.
@@ -172,11 +356,13 @@ Read [SECURITY.md](SECURITY.md) for trust boundaries and reporting guidance.
 ## Maturity and limitations
 
 - Alpha: the API may change before `1.0`.
-- Only non-streaming OpenAI-compatible chat completions are built in.
-- No persistent history, tool execution, structured output, provider-specific
-  Anthropic support, token estimation, or automatic fallback.
-- The repository contains historical backend extracts that depend on private
-  `helix-unified` modules and are not part of this product.
+- Only OpenAI-compatible chat completions are built in; streaming requires an SSE
+  implementation compatible with that protocol.
+- No built-in database/storage adapter, tool rollback/resume, provider-specific
+  Anthropic support, token estimation, automatic output repair, or automatic
+  provider fallback.
+- Historical backend extracts are absent from the current tree and are not part of
+  this product; CI rejects their accidental reintroduction into distributions.
 - The GitHub repository, distribution, and import namespace use Samsarix branding.
   GitHub redirects the historical `helix-hub-shared` repository URL for compatibility.
 

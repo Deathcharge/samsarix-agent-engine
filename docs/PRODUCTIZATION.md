@@ -1,6 +1,6 @@
 # Productization record
 
-Last updated: 2026-07-28
+Last updated: 2026-08-08
 
 ## Current repository assessment
 
@@ -19,8 +19,9 @@ documentation, licensing, examples, and mock-test additions.
 ## Chosen product
 
 Samsarix Agent Engine is a deliberately small Python SDK and CLI for developers
-who want named prompts, bounded in-memory sessions, and a minimal provider extension
-point over an OpenAI-compatible endpoint.
+who want named prompts, bounded sessions, streaming, strict structured output,
+local guardrails/events, portable snapshots, and approval-aware function tools over
+an OpenAI-compatible endpoint.
 
 The primary use case is: install in an empty Python environment, create or run a
 named agent, receive a response, continue a bounded session, inspect local metrics,
@@ -57,8 +58,11 @@ Primary journey:
   support.
 - Make echo an explicit test provider, never a hidden fallback after paid-provider
   failure.
-- Keep history in memory and bounded. Persistence is out of scope for the first
-  release because no existing persistence contract is independently viable.
+- Keep live history in memory and bounded. Expose strict portable snapshots while
+  leaving storage, encryption, access control, and retention to the application.
+- Require approval for tools by default, parse model arguments as bounded strict
+  JSON, execute sequentially, and refuse effects when no final-response request
+  budget remains.
 - Serialize calls per agent to preserve turn ordering. Independent agents can run
   concurrently.
 - Bound prompt size, output request size, sessions, history, per-session requests,
@@ -128,11 +132,15 @@ changelog, security policy, `.env.example`, or coherent package tests existed.
 
 ### P2
 
-- [ ] Native streaming with bounded partial-response handling.
-- [ ] Optional structured-output validation.
+- [x] Native streaming with bounded partial-response handling.
+- [x] Optional structured-output validation.
+- [x] Local guardrails, content-free lifecycle events, and portable snapshots.
+- [x] Approval-aware bounded function tools with deterministic protocol tests.
 - [ ] Provider-specific adapters as optional packages, only when demanded.
 - [ ] Persistent session adapter with an explicit encryption/retention design.
-- [ ] Remove or relocate the preserved legacy snapshot after owner portfolio review.
+- [ ] Prove a consumer-owned compatibility fixture and live endpoint smoke matrix.
+- [x] Remove the preserved legacy snapshot after confirming canonical repositories
+  and Git-history recovery.
 
 ## Implementation checklist
 
@@ -176,13 +184,19 @@ changelog, security policy, `.env.example`, or coherent package tests existed.
   build/publish jobs, tag/version matching, archive guards, and pinned actions.
 - Removed orphaned root LLM modules and their private imports; Git history retains
   them if portfolio archaeology is needed.
+- Added bounded SSE streaming, strict/caller-validated JSON, local guardrails,
+  content-free events, and versioned portable session snapshots.
+- Added approval-required-by-default function tools with sequential protocol
+  handling and hard request, round, call, argument, and result budgets.
+- Added runnable offline support-triage and approved-support-action proofs plus a
+  current competitive boundary assessment.
+- Removed 160 tracked `agents/` and `services/` snapshot files so the checkout now
+  represents only this standalone product; commit history retains recovery.
 
 ## Deferred and blocked work
 
 External release operations:
 
-- Decide whether to rename the historical GitHub repository slug before registering
-  publisher identity.
 - Register the `samsarix-agent-engine` distribution and configure protected PyPI
   Trusted Publishing. Verification: an authorized PyPI release installs in an
   empty environment.
@@ -194,12 +208,15 @@ the first credible narrow release.
 
 ## Known risks
 
-- OpenAI compatibility varies across providers; the package implements the common
-  non-streaming chat-completions schema only.
+- OpenAI compatibility varies across providers; deterministic tests cover the
+  common chat-completions text, SSE, and function-tool shapes, not every compatible
+  endpoint variation.
 - An application that accepts end-user base URLs can create SSRF risk outside this
   library's operator-trusted configuration model.
-- In-memory state is not durable and can contain prompt/response content until
-  evicted or cleared.
+- Live state is not durable and can contain prompt/response content until evicted
+  or cleared. Exported snapshots are plaintext unless the application encrypts them.
+- Tool effects are not transactional or automatically resumable; handlers must be
+  idempotent and own recovery, and must minimize results sent back to the provider.
 - Agent-level serialization favors ordering over throughput.
 - Legacy source remains visible and may be mistaken for supported code if readers
   ignore the package and boundary documentation.
@@ -225,73 +242,66 @@ unsupported by current evidence.
 - [LiteLLM](https://docs.litellm.ai/) provides 100+ provider translation, routing,
   fallback, and spend tracking. This repository instead keeps one compatible
   protocol and a custom-provider seam.
+- The current comparison and deliberately unbuilt surfaces are recorded in
+  [Competitive position](COMPETITIVE_POSITION.md); runnable adoption patterns and
+  caller responsibilities are in [Practical use cases](USE_CASES.md).
 - Current official GitHub action documentation uses `actions/checkout@v6` and
   `actions/setup-python@v6`; CI pins the current v6 commits and uses read-only
   permissions.
 
 ## Final verification results
 
-Verification used a fresh editable-install environment at
-`%TEMP%\samsarix-agent-engine-verify-7c33c82de6b94286be602e9843e6aff4\edit2`
-and a second fresh wheel-install environment under the same root on Python 3.11.9.
+The competitive expansion was reverified on 2026-08-10 with a fresh, ignored
+editable-install environment at `.venv` and an independent wheel-install
+environment at `.venv/wheel-smoke`, both on Python 3.11.9.
 
 | Command or check | Actual result |
 | --- | --- |
-| `python -m pip install -e ".[dev]"` | Exit 0 in the first fresh environment; package `0.1.0` and declared tools installed. |
-| `python -m ruff format --check src tests examples` | Exit 0; 15 files already formatted. |
+| `python -m pip install -r requirements-test.txt -e .` | Exit 0 in the fresh editable environment; package `0.1.0` and all declared verification tools installed. |
+| `python -m ruff format --check src tests examples` | Exit 0; 18 files already formatted. |
 | `python -m ruff check src tests examples` | Exit 0; all checks passed. |
-| `python -m mypy src/samsarix_agent_engine` | Exit 0; no issues in 7 source files under strict mode. |
-| `python -m pytest --cov=samsarix_agent_engine --cov-report=term-missing` | Exit 0; 54 passed; 91.41% branch coverage; 90% gate met. |
+| `python -m mypy src tests` | Exit 0; no issues in 12 source/test files under strict mode. |
+| `python -m pytest --cov=samsarix_agent_engine --cov-branch --cov-report=term-missing` | Exit 0; 133 passed in 9.84 seconds; 91.62% branch coverage; 90% gate met. |
 | `python -m bandit -r src/samsarix_agent_engine -q` | Exit 0; no supported-package findings. |
 | `python -m pip_audit -r requirements.txt` | Exit 0; no known runtime dependency vulnerabilities found. |
 | `python -m compileall -q src tests examples` | Exit 0. |
 | `python -m pip check` | Exit 0 in both fresh environments; no broken requirements. |
-| Four scripts under `examples/` | All exited 0 with the documented echo, custom-provider, collaboration, and reset/error behavior. |
-| Module and `samsarix-agent` entry points | `--version`, offline JSON, stdin, and text paths exited 0; the earlier unreachable-endpoint check returned sanitized exit code 3. |
-| `python -m build --sdist` and `python -m build --wheel` | Exit 0 using the declared isolated build requirement; built both distributions. |
+| Six scripts under `examples/` | All exited 0, including deterministic structured support triage and an approval-gated ticket mutation. |
+| `python -m build` | Exit 0 through isolated builds; produced both wheel and source distribution. |
 | `python -m twine check dist/*` | Both artifacts passed. |
-| Wheel/sdist archive inspection | Neither contains `agents/`, `services/`, or the old import namespace; the wheel contains 7 modules, `py.typed`, metadata, and 4 licensing/notice files. The sdist also contains policies, docs, examples, and citation metadata. |
-| Fresh wheel installation | Exit 0; import, renamed base exception, module/CLI version, text/JSON invocation, `py.typed`, licensing files, and `pip check` all passed outside the repository. |
-| Citation and license metadata | `CITATION.cff` parsed as YAML; wheel metadata reports Samsarix LLC contacts and `License-Expression: MPL-2.0`; the license SHA-256 matches the portfolio's unmodified MPL-2.0 copy. |
+| Wheel/sdist archive inspection | Contract passed with 17 wheel entries and 53 sdist entries. Neither artifact contains `agents/`, `services/`, or the old import namespace; both competitive-use-case docs and examples are required by CI/release checks. |
+| Fresh wheel installation | Exit 0 with resolved runtime dependencies; package/import versions, public `Agent` and provider imports, `python -m samsarix_agent_engine --help`, and `samsarix-agent --help` all passed. |
+| Installed metadata | Wheel reports Samsarix LLC and both working contacts with `License-Expression: MPL-2.0`. |
 | Workflow YAML parse | Exit 0; CI jobs are `quality`, `dependency-audit`, and `package`; release jobs are `build` and `publish`. |
-| `git diff --check` | Exit 0. |
-| Prior full security contract | The contract bound to `dddf4f4` remains valid with 0 supported-surface findings; this branding/package diff separately passed strict tests, Bandit, dependency audit, archive inspection, and manual diff review. |
+| Standalone tree boundary | Exactly 160 tracked legacy files were removed; the physical `agents/` and `services/` directories are absent, with recovery retained at commit `c709e2b`. |
 
-The exploratory `python -m build --no-isolation` failed because the first virtual
-environment's preinstalled `setuptools` was older than the declared
-`setuptools>=77` build requirement. This is not the documented release path;
-normal isolated `python -m build` installed the declared backend and passed.
-
-Not run locally: GitHub-hosted Actions, Python 3.12–3.14 matrix jobs, a live paid
-provider call, PyPI Trusted Publishing, signing, or a public upload. Those require
-external runners, credentials, owner authorization, or closure of publishing gates.
-All protocol tests use deterministic local HTTP transports.
+Not run locally: GitHub-hosted Python 3.12–3.14 matrix jobs, a live paid provider
+call, PyPI Trusted Publishing, signing, or a public upload. Those require external
+runners, credentials, owner authorization, or closure of publishing gates. All
+protocol tests use deterministic local HTTP transports; the PR must pass the hosted
+matrix before merge.
 
 ## Adversarial final review
 
-The final pass re-ran setup, entry points, examples, bounds, cancellation/error
-mapping, package contents, dependency consistency, secret-pattern filename scans,
-and source/document drift checks. It found and fixed three issues before acceptance:
-unbounded custom-provider output retention, unsanitized provider request IDs/text
-terminal controls, and a CLI stdin-limit path that could escape clean error mapping.
-Provider replacement cleanup is now retained, idempotent, exhaustive, and sanitized;
-CI actions are commit-pinned and both archive formats are guarded. The branding pass
-also caught and fixed two release-metadata defects before acceptance: setuptools
-rejects `mailto:` project URLs, and PEP 639 license expressions cannot be combined
-with the superseded license classifier.
+The final pass re-ran setup, entry points, all examples, bounds,
+cancellation/error mapping, package contents, dependency consistency, and
+source/document drift checks. The expanded runtime keeps structured parsing,
+streaming retention, guardrails, snapshots, approvals, tool arguments/results,
+model rounds, calls, and requests under explicit limits. Mutating tools remain
+approval-required by default and request budgets are checked before effects.
 
-The security scan statically inventoried retained legacy code and manually assessed
-its Python execution, subprocess, path, and weak-digest candidates. None is reachable
-from the distributed product. This is not a deployment-safety finding for those
-extracts: they remain explicitly unsupported and require a new scan in their
-canonical application before reuse.
+CI actions remain commit-pinned, both archive formats are guarded, and the artifact
+contract now requires the competitive-position documentation and both production
+use-case proofs. Historical application extracts were removed instead of being
+treated as a security-reviewed deployment surface; any canonical application reuse
+requires its own review in the owning repository.
 
 ## Release disposition
 
-**Release candidate with named external gates.** The narrow SDK/CLI is independently
-installable and its release-candidate journey passes locally with no actionable P0
-or supported-surface P1 remaining. The Samsarix identity, MPL-2.0 license, and
-working contact addresses are documented. Public upload is a no-go until repository
-naming is finalized, the PyPI project and protected Trusted Publishing identity are
-configured, and GitHub CI passes on the release commit. Version `0.1.0` remains
-alpha and unreleased until those gates close.
+**Competitive alpha release candidate with named external gates.** The bounded
+SDK/CLI is independently installable, has two executable business-use-case proofs,
+and passes the complete local release journey. The Samsarix identity, MPL-2.0
+license, working contact addresses, and standalone repository boundary are explicit.
+Public upload remains a no-go until the PyPI project and protected Trusted Publishing
+identity are configured and GitHub CI passes the release commit. Version `0.1.0`
+remains alpha and unreleased until those gates close.

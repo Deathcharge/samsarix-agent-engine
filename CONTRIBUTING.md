@@ -36,9 +36,9 @@ credentials.
 
 - `src/samsarix_agent_engine/` is the supported product.
 - `tests/` and `examples/` must match the installed public API.
-- `agents/` and `services/` are legacy extracts. Do not expand or restore their
-  private-repository coupling. Changes there need a separately justified owner
-  decision and must not enter the distribution accidentally.
+- `agents/` and `services/` were removed legacy extracts. Do not restore them from
+  history; changes belong in their canonical repositories after a separately
+  justified ownership and product decision.
 - Do not add a provider SDK to the required dependency set when a custom provider
   adapter can keep it optional.
 - Do not add telemetry, hosted infrastructure, billing, or persistence without a

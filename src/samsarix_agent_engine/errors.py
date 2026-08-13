@@ -34,3 +34,33 @@ class ProviderError(SamsarixAgentError):
         super().__init__(message)
         self.status_code = status_code
         self.retryable = retryable
+
+
+class StructuredOutputError(ProviderError):
+    """Raised when a provider response cannot satisfy a structured-output contract."""
+
+
+class GuardrailError(SamsarixAgentError):
+    """Raised when a local input or output guardrail fails or blocks content."""
+
+    def __init__(self, message: str, *, stage: str, blocked: bool) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.blocked = blocked
+
+
+class ToolError(SamsarixAgentError):
+    """Base class for bounded tool-loop failures."""
+
+
+class ToolApprovalError(ToolError):
+    """Raised before execution when a tool call is denied or cannot be approved."""
+
+    def __init__(self, message: str, *, tool_name: str, tool_call_id: str) -> None:
+        super().__init__(message)
+        self.tool_name = tool_name
+        self.tool_call_id = tool_call_id
+
+
+class ToolExecutionError(ToolError):
+    """Raised when a tool request or sanitized local handler execution fails."""

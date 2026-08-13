@@ -1,24 +1,29 @@
-# Legacy code boundary
+# Historical code boundary
 
-`agents/` and `services/` are preserved historical extracts from a larger Helix
-backend. They are not the independently supported product in this repository.
+The current checkout contains only the standalone Samsarix Agent Engine product.
 
-Evidence for this boundary:
+On 2026-08-08, 160 tracked files under `agents/` and `services/` were removed after
+verification showed they were non-distributed extracts from a larger Helix/Samsarix
+application and that the related repositories still exist. Keeping those copies in
+this SDK created ownership, security-audit, licensing, and contributor ambiguity.
 
-- Most modules import `apps.backend.*`, which is absent from this repository.
-- Their FastAPI, database, queue, billing, storage, and deployment dependencies
-  are not declared by this package.
-- Several imports resolve only on the owner's workstation because another
-  `helix-unified` checkout is present on `PYTHONPATH`.
-- The prior test suite used only mocks and exercised none of these modules.
-- No deployment manifests or complete service configuration exist here.
+## Recovery and ownership
 
-The `src/` package configuration includes only `samsarix_agent_engine*`, so these
-directories cannot enter wheels or source distributions accidentally. CI and the
-README make no runtime claim about them.
+- The exact removed path ledger and regression analysis are recorded in
+  [Historical snapshot disposition](SNAPSHOT_DISPOSITION.md).
+- Git commit `c709e2b` is the last branch commit before removal, so repository
+  archaeology remains possible without keeping duplicate code in the working tree.
+- Canonical application behavior belongs in its owning repository, not in a restored
+  snapshot here.
+- Do not copy or restore the removed directories into this package. Use a public,
+  versioned dependency or adapter if a future integration is required.
 
-Owner decision still required: either delete the snapshot in a future focused
-change after confirming no portfolio value, or move maintained components back to
-their canonical repository. Do not independently deploy these modules from this
-repository; their authentication, authorization, persistence, and operational
-assumptions have not been validated here.
+## Enforced boundary
+
+- Packaging includes only `src/samsarix_agent_engine*`.
+- Wheel and sdist checks reject `agents/`, `services/`, and the historical import
+  namespace.
+- Manifest pruning remains as defense in depth if those names are accidentally
+  reintroduced.
+- Security and release claims cover the current package and CLI, not historical
+  revisions or another repository's deployment.
