@@ -9,6 +9,8 @@ this SDK created ownership, security-audit, licensing, and contributor ambiguity
 
 ## Recovery and ownership
 
+- The exact removed path ledger and regression analysis are recorded in
+  [Historical snapshot disposition](SNAPSHOT_DISPOSITION.md).
 - Git commit `c709e2b` is the last branch commit before removal, so repository
   archaeology remains possible without keeping duplicate code in the working tree.
 - Canonical application behavior belongs in its owning repository, not in a restored
