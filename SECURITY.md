@@ -19,18 +19,27 @@ package unless an actual current package path reaches the affected code.
   expose them to end users create an additional boundary and must constrain it.
 - API credentials must enter through environment/configuration, must not appear in
   URLs, logs, exceptions, command-line arguments, or persisted history.
+- Sanitized exception wrappers must suppress secret-bearing causes in ordinary
+  formatted tracebacks. Applications must not log raw exception context or frame
+  locals; suppression is not memory erasure. Trusted custom providers are
+  responsible for sanitizing public SDK errors they raise directly.
 - The engine must never execute model output or silently select a different paid
   provider.
 - Every network request must be bounded by time, retry count, response size, and
   cancellation. Redirects are disabled by default.
 - Conversation, audit-event, and metrics state must remain bounded and process-local.
-  Portable session snapshots are created only through an explicit call, contain no
-  credentials, are size/version/schema checked, and leave encryption, retention,
-  access control, and storage to the calling application.
+  Portable session snapshots are created only through an explicit call, do not copy
+  provider configuration, and are size/version/schema checked. Their conversation
+  text can contain sensitive data, including secrets supplied in prompts/responses.
+  The calling application owns redaction, encryption, retention, access control,
+  and storage.
 - Audit events must not contain prompt, response, system-prompt, or credential
   content. Tool-event metadata must be locally generated or selected from the
   registered tool set, never copied from provider-selected call identifiers or
-  unavailable tool names.
+  unavailable tool names. Callers must use nonsecret agent/session/provider/model
+  identifiers because these identifiers are retained in event metadata.
+- Strict JSON parsing must bound raw input before decoding, including direct calls
+  to the exported parser, and reject rather than truncate oversized values.
 - Complete-output guardrails must fail closed for streaming rather than expose
   content before inspection.
 - Tool definitions and handlers are trusted local application code. Model-selected

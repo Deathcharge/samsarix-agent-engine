@@ -123,6 +123,10 @@ route = await agent.invoke_structured(
 )
 ```
 
+Direct `parse_json_output()` calls enforce a 1,000,000-character raw-input ceiling,
+including whitespace, before decoding. Set `max_chars` to a smaller positive
+integer for tighter application limits; `max_depth` controls nesting.
+
 Invalid JSON or validator failures raise `StructuredOutputError`, count as failed
 requests, and are not added to conversation history. The validator runs once and
 the SDK does not automatically retry or repair model output.
@@ -159,6 +163,8 @@ and CLI exit code `4` distinguishes them from provider failures.
 `agent.events()` returns a bounded local trail containing event type, timestamp,
 agent/session/provider/model identifiers, request number, latency, and error type.
 Events deliberately omit prompt, response, system-prompt, and credential content.
+Use nonsecret agent/session/provider/model identifiers: these caller-supplied
+identifiers are retained as metadata, not automatically redacted.
 Tool events retain only the registered local tool name (or `unavailable`) and a
 per-agent local correlation ID; provider-selected tool names and call IDs never
 enter the audit trail.
@@ -178,7 +184,9 @@ await agent.import_session(restored, session_id="customer-42-restored")
 
 Snapshots are strict, versioned, limited to 1,000 messages and 1,000,000 serialized
 characters, contain successful user/assistant turns plus the consumed request
-count, and never contain API credentials. They are not encrypted by the SDK.
+count. The SDK does not copy provider configuration or API keys into snapshots,
+but conversation text can itself contain secrets. Redact sensitive content and
+control access, encryption, and retention; the SDK does not encrypt snapshots.
 
 ## Approval-aware tools
 
@@ -344,6 +352,10 @@ so turns cannot be reordered; use separate agents for independent concurrency.
   caller. Echo mode makes no network request.
 - The package does not log prompts, responses, or API keys.
 - HTTP error messages omit response bodies and transport exception text.
+- Sanitized wrappers suppress original causes in ordinary formatted tracebacks.
+  This is not memory erasure: do not configure logging to capture frame locals or
+  inspect raw exception context. Trusted custom providers must sanitize any
+  public SDK errors they raise directly.
 - No telemetry is collected.
 - Conversation history remains in memory until evicted or cleared.
 - Model output is untrusted data and is never evaluated as code. Explicit tool

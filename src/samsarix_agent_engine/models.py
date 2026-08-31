@@ -108,15 +108,29 @@ class ProviderStreamChunk:
                 raise InputValidationError(f"{label} must be a non-negative integer")
 
 
-def parse_json_output(content: str, *, max_depth: int = 64) -> JsonValue:
+def parse_json_output(
+    content: str, *, max_depth: int = 64, max_chars: int = 1_000_000
+) -> JsonValue:
     """Parse strict, finite JSON from an untrusted model response.
 
     Duplicate object keys, JavaScript-style non-finite numbers, excessive
     nesting, and non-string input are rejected so downstream automation receives
-    one deterministic representation.
+    one deterministic representation. Raw input, including whitespace, is capped
+    before decoding. Callers may lower but cannot raise the one-million-character
+    ceiling.
     """
 
-    if not isinstance(content, str) or not content.strip():
+    if (
+        not isinstance(max_chars, int)
+        or isinstance(max_chars, bool)
+        or not 1 <= max_chars <= 1_000_000
+    ):
+        raise InputValidationError("max_chars must be an integer between 1 and 1000000")
+    if not isinstance(content, str):
+        raise StructuredOutputError("provider response contained no structured output")
+    if len(content) > max_chars:
+        raise StructuredOutputError("structured output exceeded the character limit")
+    if not content.strip():
         raise StructuredOutputError("provider response contained no structured output")
     if not isinstance(max_depth, int) or isinstance(max_depth, bool) or not 1 <= max_depth <= 256:
         raise InputValidationError("max_depth must be an integer between 1 and 256")
@@ -140,8 +154,8 @@ def parse_json_output(content: str, *, max_depth: int = 64) -> JsonValue:
         )
     except StructuredOutputError:
         raise
-    except (ValueError, RecursionError, UnicodeError) as exc:
-        raise StructuredOutputError("provider response was not valid bounded JSON") from exc
+    except (ValueError, RecursionError, UnicodeError):
+        raise StructuredOutputError("provider response was not valid bounded JSON") from None
 
     def validate(value: Any, depth: int) -> JsonValue:
         if depth > max_depth:
@@ -414,9 +428,13 @@ class ToolDefinition:
                 separators=(",", ":"),
                 sort_keys=True,
             )
-            parsed = parse_json_output(parameters_json, max_depth=32)
-        except (TypeError, ValueError, StructuredOutputError) as exc:
-            raise InputValidationError("tool parameters must contain bounded JSON values") from exc
+            parsed = (
+                parse_json_output(parameters_json, max_depth=32)
+                if len(parameters_json) <= 50_000
+                else None
+            )
+        except (TypeError, ValueError, StructuredOutputError):
+            raise InputValidationError("tool parameters must contain bounded JSON values") from None
         if not isinstance(parsed, dict) or len(parameters_json) > 50_000:
             raise InputValidationError(
                 "tool parameters must be a JSON object of at most 50000 characters"
@@ -621,8 +639,8 @@ class SessionSnapshot:
             )
         try:
             parsed = parse_json_output(serialized, max_depth=8)
-        except StructuredOutputError as exc:
-            raise InputValidationError("snapshot was not valid bounded JSON") from exc
+        except StructuredOutputError:
+            raise InputValidationError("snapshot was not valid bounded JSON") from None
         if not isinstance(parsed, dict):
             raise InputValidationError("snapshot must be a JSON object")
         return cls.from_dict(parsed)

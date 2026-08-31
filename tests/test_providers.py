@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+import traceback
+from collections.abc import AsyncIterator, Sequence
 
 import httpx
 import pytest
@@ -20,6 +21,58 @@ from samsarix_agent_engine import (
 
 def _messages() -> list[ChatMessage]:
     return [ChatMessage(role="user", content="hello")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["invoke", "invoke_tools", "stream"])
+@pytest.mark.parametrize("failure_type", [httpx.ReadTimeout, httpx.ReadError])
+async def test_response_read_failures_suppress_original_tracebacks(
+    operation: str, failure_type: type[httpx.RequestError]
+) -> None:
+    class FailingBody(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            yield b""
+            raise failure_type("private-transport-detail")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=FailingBody()
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenAICompatibleProvider(client=client, max_retries=0)
+        with pytest.raises(ProviderError) as captured:
+            if operation == "stream":
+                _ = [
+                    chunk
+                    async for chunk in provider.stream(
+                        _messages(), "test", max_tokens=10, temperature=0
+                    )
+                ]
+            elif operation == "invoke_tools":
+                await provider.invoke_tools(
+                    [ToolMessage(role="user", content="hello")],
+                    "test",
+                    [],
+                    max_tokens=10,
+                    temperature=0,
+                )
+            else:
+                await provider.invoke(_messages(), "test", max_tokens=10, temperature=0)
+        assert "private-transport-detail" not in "".join(traceback.format_exception(captured.value))
+        assert captured.value.__cause__ is None
+        assert captured.value.__suppress_context__ is True
+        assert captured.value.retryable is True
+
+
+@pytest.mark.parametrize("payload", [b"not-json", bytes([255])])
+def test_sse_decode_failure_suppresses_original_traceback(payload: bytes) -> None:
+    with pytest.raises(ProviderError, match="invalid JSON") as captured:
+        OpenAICompatibleProvider._decode_sse_payload(payload)
+    formatted = "".join(traceback.format_exception(captured.value))
+    assert "JSONDecodeError:" not in formatted
+    assert "UnicodeDecodeError:" not in formatted
+    assert captured.value.__cause__ is None
 
 
 class StringProvider(BaseLLMProvider):
@@ -441,7 +494,7 @@ async def test_timeout_is_retried_then_sanitized() -> None:
     )
     with pytest.raises(ProviderError, match="timed out") as captured:
         await provider.invoke(_messages(), "test", max_tokens=10, temperature=0)
-    assert "do-not-copy" not in str(captured.value)
+    assert "do-not-copy" not in "".join(traceback.format_exception(captured.value))
     assert captured.value.retryable is True
     assert attempts == 2
     await client.aclose()
@@ -465,7 +518,7 @@ async def test_request_error_is_retried_then_sanitized() -> None:
     )
     with pytest.raises(ProviderError, match="request failed") as captured:
         await provider.invoke(_messages(), "test", max_tokens=10, temperature=0)
-    assert "do-not-copy" not in str(captured.value)
+    assert "do-not-copy" not in "".join(traceback.format_exception(captured.value))
     assert captured.value.retryable is True
     assert attempts == 2
     await client.aclose()
