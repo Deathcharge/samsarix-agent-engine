@@ -160,8 +160,8 @@ class Agent:
             parsed = parse_json_output(content, max_depth=max_depth)
             try:
                 return validator(parsed)
-            except Exception as exc:
-                raise StructuredOutputError("structured output validation failed") from exc
+            except Exception:
+                raise StructuredOutputError("structured output validation failed") from None
 
         return await self._invoke_validated(prompt, session_id=session_id, validator=validate)
 
@@ -306,7 +306,7 @@ class Agent:
                         error_type=type(exc).__name__,
                     )
                     raise
-                except Exception as exc:
+                except Exception:
                     self._metrics.failures += 1
                     self._record_event(
                         "request.failed",
@@ -315,7 +315,7 @@ class Agent:
                         latency_ms=self._elapsed_ms(started),
                         error_type="ProviderError",
                     )
-                    raise ProviderError("custom provider tool invocation failed") from exc
+                    raise ProviderError("custom provider tool invocation failed") from None
                 finally:
                     self._metrics.last_latency_ms = self._elapsed_ms(started)
 
@@ -416,7 +416,7 @@ class Agent:
                     error_type=type(exc).__name__,
                 )
                 raise
-            except Exception as exc:
+            except Exception:
                 self._metrics.failures += 1
                 self._record_event(
                     "request.failed",
@@ -425,7 +425,7 @@ class Agent:
                     latency_ms=self._elapsed_ms(started),
                     error_type="ProviderError",
                 )
-                raise ProviderError("custom provider streaming failed") from exc
+                raise ProviderError("custom provider streaming failed") from None
             finally:
                 self._metrics.last_latency_ms = self._elapsed_ms(started)
 
@@ -510,7 +510,7 @@ class Agent:
                     error_type=type(exc).__name__,
                 )
                 raise
-            except Exception as exc:
+            except Exception:
                 self._metrics.failures += 1
                 self._record_event(
                     "request.failed",
@@ -519,7 +519,7 @@ class Agent:
                     latency_ms=self._elapsed_ms(started),
                     error_type="ProviderError",
                 )
-                raise ProviderError("custom provider invocation failed") from exc
+                raise ProviderError("custom provider invocation failed") from None
             finally:
                 self._metrics.last_latency_ms = self._elapsed_ms(started)
 
@@ -662,7 +662,7 @@ class Agent:
                     result = decision
                 else:
                     raise TypeError("unsupported guardrail result")
-            except Exception as exc:
+            except Exception:
                 self._record_event(
                     "guardrail.failed",
                     session_id=context.session_id,
@@ -673,7 +673,7 @@ class Agent:
                     f"{context.stage} guardrail failed",
                     stage=context.stage,
                     blocked=False,
-                ) from exc
+                ) from None
             if result.allowed:
                 continue
             self._metrics.guardrail_blocks += 1
@@ -725,7 +725,7 @@ class Agent:
 
         try:
             parsed_arguments = parse_json_output(call.arguments, max_depth=32)
-        except StructuredOutputError as exc:
+        except StructuredOutputError:
             self._metrics.tool_failures += 1
             self._record_event(
                 "tool.failed",
@@ -735,7 +735,7 @@ class Agent:
                 tool_name=event_tool_name,
                 tool_call_id=event_tool_call_id,
             )
-            raise ToolExecutionError("model supplied invalid bounded JSON tool arguments") from exc
+            raise ToolExecutionError("model supplied invalid bounded JSON tool arguments") from None
         if not isinstance(parsed_arguments, dict):
             self._metrics.tool_failures += 1
             self._record_event(
@@ -778,7 +778,7 @@ class Agent:
                     raise TypeError("unsupported approval result")
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
+            except Exception:
                 self._metrics.tool_failures += 1
                 self._record_event(
                     "tool.failed",
@@ -792,7 +792,7 @@ class Agent:
                     "tool approval handler failed",
                     tool_name=event_tool_name,
                     tool_call_id=event_tool_call_id,
-                ) from exc
+                ) from None
             if not decision.approved:
                 self._deny_tool(
                     call,
@@ -821,10 +821,12 @@ class Agent:
                 separators=(",", ":"),
                 sort_keys=True,
             )
-            parse_json_output(serialized, max_depth=32)
+            # Keep oversized results on the budget-error path below, before parsing.
+            if len(serialized) <= self._max_tool_result_chars:
+                parse_json_output(serialized, max_depth=32)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except Exception:
             self._metrics.tool_failures += 1
             self._record_event(
                 "tool.failed",
@@ -834,7 +836,7 @@ class Agent:
                 tool_name=event_tool_name,
                 tool_call_id=event_tool_call_id,
             )
-            raise ToolExecutionError("tool handler failed or returned invalid JSON") from exc
+            raise ToolExecutionError("tool handler failed or returned invalid JSON") from None
         if len(serialized) > self._max_tool_result_chars:
             self._metrics.tool_failures += 1
             self._record_event(
@@ -1096,11 +1098,11 @@ class LLMAgentEngine:
         output_guardrails = self._validate_guardrails(output_guardrails, "output_guardrails")
         try:
             provider_instance = self._providers[provider_name]
-        except KeyError as exc:
+        except KeyError:
             available = ", ".join(sorted(self._providers))
             raise ConfigurationError(
                 f"provider {provider_name!r} is not registered (available: {available})"
-            ) from exc
+            ) from None
         return Agent(
             name=name,
             model=model.strip(),
@@ -1137,7 +1139,7 @@ class LLMAgentEngine:
                 if first_error is None:
                     first_error = exc
         if first_error is not None:
-            raise ProviderError("provider cleanup failed") from first_error
+            raise ProviderError("provider cleanup failed") from None
 
     async def __aenter__(self) -> LLMAgentEngine:
         return self

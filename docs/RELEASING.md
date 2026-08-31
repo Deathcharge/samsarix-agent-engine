@@ -24,17 +24,21 @@ From a fresh virtual environment:
 
 ```bash
 python -m pip install -e ".[dev]"
-python -m ruff check src tests examples
-python -m ruff format --check src tests examples
+python -m ruff check src tests examples scripts
+python -m ruff format --check src tests examples scripts
 python -m mypy src/samsarix_agent_engine
 python -m bandit -r src/samsarix_agent_engine -q
 python -m pip_audit -r requirements.txt
 python -m pytest --cov=samsarix_agent_engine --cov-report=term-missing
 python -m build
 python -m twine check dist/*
+python scripts/smoke_wheel.py dist/<built-wheel-filename>.whl
 ```
 
-Install the built wheel into a second empty environment and run:
+The smoke script creates a temporary empty environment, installs the wheel,
+checks dependency consistency, runs CLI modes and all six offline examples
+outside the checkout, and cleans up its own temporary directory. CI runs it too.
+For a manual second-environment check, run:
 
 ```bash
 samsarix-agent --version

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 from collections.abc import AsyncIterator, Sequence
 from typing import cast
 
@@ -275,7 +276,7 @@ async def test_guardrail_callback_failure_is_sanitized_and_audited() -> None:
 
     with pytest.raises(GuardrailError, match="guardrail failed") as captured:
         await agent.invoke("hello")
-    assert "secret-bearing" not in str(captured.value)
+    assert "secret-bearing" not in "".join(traceback.format_exception(captured.value))
     assert captured.value.blocked is False
     assert [event.event_type for event in agent.events()] == ["guardrail.failed"]
 
@@ -589,7 +590,7 @@ async def test_tool_handler_and_approval_errors_are_sanitized() -> None:
 
     with pytest.raises(ToolExecutionError, match="handler failed") as handler_error:
         await agent.run_tools("act", [tool])
-    assert "secret-bearing" not in str(handler_error.value)
+    assert "secret-bearing" not in "".join(traceback.format_exception(handler_error.value))
 
     provider = ToolLoopProvider(
         [ToolProviderResponse(tool_calls=(ToolCall(call_id="call-2", name="act", arguments="{}"),))]
@@ -609,7 +610,7 @@ async def test_tool_handler_and_approval_errors_are_sanitized() -> None:
 
     with pytest.raises(ToolApprovalError, match="approval handler failed") as approval_error:
         await agent.run_tools("act", [approval_tool], approval_handler=fail_approval)
-    assert "secret-bearing" not in str(approval_error.value)
+    assert "secret-bearing" not in "".join(traceback.format_exception(approval_error.value))
 
     provider = ToolLoopProvider(
         [ToolProviderResponse(tool_calls=(ToolCall(call_id="call-3", name="act", arguments="{}"),))]
@@ -705,6 +706,33 @@ async def test_tool_loop_enforces_round_call_argument_and_result_limits() -> Non
     agent = engine.create_agent(name="assistant", model="test", provider="tools")
     with pytest.raises(BudgetExceededError, match="result exceeded"):
         await agent.run_tools("act", [tool])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [20_001, 1_000_001])
+async def test_oversized_tool_result_preserves_budget_error(size: int) -> None:
+    tool = ToolDefinition(
+        name="read",
+        description="Read.",
+        parameters={"type": "object"},
+        handler=lambda _arguments: "a" * size,
+        requires_approval=False,
+    )
+    provider = ToolLoopProvider(
+        [
+            ToolProviderResponse(
+                tool_calls=(ToolCall(call_id="call-1", name="read", arguments="{}"),)
+            )
+        ]
+    )
+    engine = LLMAgentEngine()
+    engine.register_provider("tools", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="tools")
+    with pytest.raises(BudgetExceededError, match="result exceeded"):
+        await agent.run_tools("read", [tool])
+    assert agent.history() == ()
+    assert agent.get_metrics()["tool_failures"] == 1
+    assert any(event.error_type == "ToolResultBudgetError" for event in agent.events())
 
 
 @pytest.mark.asyncio
@@ -894,7 +922,7 @@ async def test_structured_validator_errors_are_sanitized() -> None:
 
     with pytest.raises(StructuredOutputError, match="validation failed") as captured:
         await agent.invoke_structured("Classify", reject)
-    assert "secret-bearing" not in str(captured.value)
+    assert "secret-bearing" not in "".join(traceback.format_exception(captured.value))
     assert agent.history() == ()
 
 
@@ -1025,7 +1053,7 @@ async def test_provider_failures_are_counted_and_unknown_errors_are_sanitized(
     with pytest.raises(ProviderError) as captured:
         await agent.invoke("hello")
     if not expected:
-        assert "secret-bearing" not in str(captured.value)
+        assert "secret-bearing" not in "".join(traceback.format_exception(captured.value))
     assert agent.get_metrics()["requests"] == 1
     assert agent.get_metrics()["failures"] == 1
     assert agent.history() == ()
@@ -1041,6 +1069,42 @@ async def test_engine_closes_shared_provider_once() -> None:
     await engine.close()
     await engine.close()
     assert provider.closed == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["stream", "tools"])
+async def test_custom_provider_failures_suppress_original_tracebacks(
+    operation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fail_tools(*_args: object, **_kwargs: object) -> ToolProviderResponse:
+        raise RuntimeError("private-provider-detail")
+
+    async def fail_stream(*_args: object, **_kwargs: object) -> AsyncIterator[ProviderStreamChunk]:
+        yield ProviderStreamChunk(delta="partial")
+        raise RuntimeError("private-provider-detail")
+
+    provider = RecordingProvider()
+    monkeypatch.setattr(provider, "invoke_tools", fail_tools)
+    monkeypatch.setattr(provider, "stream", fail_stream)
+    engine = LLMAgentEngine()
+    engine.register_provider("custom", provider)
+    agent = engine.create_agent(name="assistant", model="test", provider="custom")
+    with pytest.raises(ProviderError) as captured:
+        if operation == "stream":
+            _ = [chunk async for chunk in agent.stream("hello")]
+        else:
+            tool = ToolDefinition(
+                name="read",
+                description="Read.",
+                parameters={"type": "object"},
+                handler=lambda _arguments: None,
+            )
+            await agent.run_tools("hello", [tool])
+    assert "private-provider-detail" not in "".join(traceback.format_exception(captured.value))
+    assert captured.value.__cause__ is None
+    assert captured.value.__suppress_context__ is True
+    assert agent.history() == ()
+    assert agent.get_metrics()["failures"] == 1
 
 
 @pytest.mark.asyncio
@@ -1069,7 +1133,7 @@ async def test_engine_closes_all_providers_and_sanitizes_cleanup_failure() -> No
 
     with pytest.raises(ProviderError, match="cleanup failed") as captured:
         await engine.close()
-    assert "secret-bearing" not in str(captured.value)
+    assert "secret-bearing" not in "".join(traceback.format_exception(captured.value))
     assert healthy.closed == 1
 
 

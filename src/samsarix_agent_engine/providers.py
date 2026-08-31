@@ -203,10 +203,10 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         try:
             try:
                 data = await self._read_bounded_json(response)
-            except httpx.TimeoutException as exc:
-                raise ProviderError("provider response timed out", retryable=True) from exc
-            except httpx.RequestError as exc:
-                raise ProviderError("provider response failed", retryable=True) from exc
+            except httpx.TimeoutException:
+                raise ProviderError("provider response timed out", retryable=True) from None
+            except httpx.RequestError:
+                raise ProviderError("provider response failed", retryable=True) from None
         finally:
             await response.aclose()
 
@@ -237,10 +237,10 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         try:
             try:
                 data = await self._read_bounded_json(response)
-            except httpx.TimeoutException as exc:
-                raise ProviderError("provider response timed out", retryable=True) from exc
-            except httpx.RequestError as exc:
-                raise ProviderError("provider response failed", retryable=True) from exc
+            except httpx.TimeoutException:
+                raise ProviderError("provider response timed out", retryable=True) from None
+            except httpx.RequestError:
+                raise ProviderError("provider response failed", retryable=True) from None
         finally:
             await response.aclose()
         return self._normalize_tool_response(data, requested_model=model)
@@ -304,10 +304,10 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                     if delta:
                         emitted = True
                         yield ProviderStreamChunk(delta=delta, model=served_model)
-            except httpx.TimeoutException as exc:
-                raise ProviderError("provider stream timed out", retryable=True) from exc
-            except httpx.RequestError as exc:
-                raise ProviderError("provider stream failed", retryable=True) from exc
+            except httpx.TimeoutException:
+                raise ProviderError("provider stream timed out", retryable=True) from None
+            except httpx.RequestError:
+                raise ProviderError("provider stream failed", retryable=True) from None
         finally:
             await response.aclose()
 
@@ -325,16 +325,16 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             try:
                 request = self._client.build_request("POST", self.endpoint, json=payload)
                 response = await self._client.send(request, stream=True)
-            except httpx.TimeoutException as exc:
+            except httpx.TimeoutException:
                 if attempt < self.max_retries:
                     await self._sleep_before_retry(attempt)
                     continue
-                raise ProviderError("provider request timed out", retryable=True) from exc
-            except httpx.RequestError as exc:
+                raise ProviderError("provider request timed out", retryable=True) from None
+            except httpx.RequestError:
                 if attempt < self.max_retries:
                     await self._sleep_before_retry(attempt)
                     continue
-                raise ProviderError("provider request failed", retryable=True) from exc
+                raise ProviderError("provider request failed", retryable=True) from None
 
             status = response.status_code
             if status in _RETRYABLE_STATUS_CODES and attempt < self.max_retries:
@@ -395,8 +395,8 @@ class OpenAICompatibleProvider(BaseLLMProvider):
     def _decode_sse_payload(payload: bytes) -> dict[str, Any]:
         try:
             data: Any = json.loads(payload)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ProviderError("provider stream contained invalid JSON") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ProviderError("provider stream contained invalid JSON") from None
         if not isinstance(data, dict):
             raise ProviderError("provider stream contained an invalid event")
         return data
@@ -411,18 +411,18 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             chunks.append(chunk)
         try:
             return json.loads(b"".join(chunks))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ProviderError("provider returned invalid JSON") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ProviderError("provider returned invalid JSON") from None
 
     @staticmethod
     def _normalize_response(data: Any, *, requested_model: str) -> ProviderResponse:
         try:
             choice = data["choices"][0]
             content = choice["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
+        except (KeyError, IndexError, TypeError):
             raise ProviderError(
                 "provider response did not match the chat completion schema"
-            ) from exc
+            ) from None
         if not isinstance(content, str) or not content:
             raise ProviderError("provider response contained no text content")
 
@@ -441,10 +441,10 @@ class OpenAICompatibleProvider(BaseLLMProvider):
     def _normalize_tool_response(data: Any, *, requested_model: str) -> ToolProviderResponse:
         try:
             message = data["choices"][0]["message"]
-        except (KeyError, IndexError, TypeError) as exc:
+        except (KeyError, IndexError, TypeError):
             raise ProviderError(
                 "provider response did not match the tool completion schema"
-            ) from exc
+            ) from None
         if not isinstance(message, dict):
             raise ProviderError("provider response did not match the tool completion schema")
         content = message.get("content")
@@ -466,10 +466,10 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                     name=function["name"],
                     arguments=function["arguments"],
                 )
-            except (KeyError, TypeError, InputValidationError) as exc:
+            except (KeyError, TypeError, InputValidationError):
                 raise ProviderError(
                     "provider response contained an invalid function tool call"
-                ) from exc
+                ) from None
             calls.append(call)
 
         usage = data.get("usage", {}) if isinstance(data, dict) else {}
@@ -498,8 +498,8 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                     else None
                 ),
             )
-        except InputValidationError as exc:
-            raise ProviderError("provider tool response contained no usable output") from exc
+        except InputValidationError:
+            raise ProviderError("provider tool response contained no usable output") from None
 
     @staticmethod
     def _bounded_retry_after(value: str | None) -> float | None:

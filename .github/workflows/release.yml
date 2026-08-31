@@ -44,6 +44,8 @@ jobs:
         run: python -m build
       - name: Verify metadata
         run: python -m twine check dist/*
+      - name: Verify installed wheel outside the checkout
+        run: python scripts/smoke_wheel.py dist/*.whl
       - name: Verify artifact contents
         shell: python
         run: |
@@ -77,6 +79,7 @@ jobs:
               "/examples/approved_support_action.py",
               "/examples/basic_agent.py",
               "/examples/support_triage.py",
+              "/scripts/smoke_wheel.py",
           }
           missing_sdist = {
               suffix

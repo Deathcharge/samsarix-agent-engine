@@ -1,6 +1,6 @@
 # Productization record
 
-Last updated: 2026-08-08
+Last updated: 2026-08-31
 
 ## Current repository assessment
 
@@ -51,8 +51,8 @@ Primary journey:
 
 - Use modern `pyproject.toml` metadata and a `src/` package so tests exercise the
   installed package shape rather than accidental root imports.
-- Include only `samsarix_agent_engine*` in distributions. Preserve but explicitly
-  exclude the legacy backend snapshot.
+- Include only `samsarix_agent_engine*` in distributions. The legacy backend
+  snapshot was removed from the checkout and remains recoverable in Git history.
 - Keep one required runtime dependency (`httpx`) and avoid vendor SDK coupling.
 - Provide an abstract custom-provider seam rather than claiming broad provider
   support.
@@ -153,7 +153,9 @@ changelog, security policy, `.env.example`, or coherent package tests existed.
 - [x] Real deterministic tests and package-content CI guard.
 - [x] README, getting started, security, legacy, contributing, changelog, and release docs.
 - [x] Record final isolated verification outcomes below.
-- [x] Complete final security artifacts and adversarial review.
+- [x] Complete code-level adversarial review and regression verification.
+- [ ] Seal the historical security workbench report (artifact-access limitation;
+  not a completed scan or a substitute for the current verification below).
 
 ## Release acceptance criteria
 
@@ -218,8 +220,8 @@ the first credible narrow release.
 - Tool effects are not transactional or automatically resumable; handlers must be
   idempotent and own recovery, and must minimize results sent back to the provider.
 - Agent-level serialization favors ordering over throughput.
-- Legacy source remains visible and may be mistaken for supported code if readers
-  ignore the package and boundary documentation.
+- Historical revisions retain legacy application extracts; they are not part of
+  the current supported package or checkout.
 
 ## Distribution and sustainability
 
@@ -249,7 +251,7 @@ unsupported by current evidence.
   `actions/setup-python@v6`; CI pins the current v6 commits and uses read-only
   permissions.
 
-## Final verification results
+## Historical verification results (2026-08-10)
 
 The competitive expansion was reverified on 2026-08-10 with a fresh, ignored
 editable-install environment at `.venv` and an independent wheel-install
@@ -275,11 +277,10 @@ environment at `.venv/wheel-smoke`, both on Python 3.11.9.
 | Workflow YAML parse | Exit 0; CI jobs are `quality`, `dependency-audit`, and `package`; release jobs are `build` and `publish`. |
 | Standalone tree boundary | Exactly 160 tracked legacy files were removed; the physical `agents/` and `services/` directories are absent, with recovery retained at commit `c709e2b`. |
 
-Not run locally: GitHub-hosted Python 3.12–3.14 matrix jobs, a live paid provider
-call, PyPI Trusted Publishing, signing, or a public upload. Those require external
-runners, credentials, owner authorization, or closure of publishing gates. All
-protocol tests use deterministic local HTTP transports; the PR must pass the hosted
-matrix before merge.
+At that checkpoint, GitHub-hosted Python 3.12–3.14 jobs had not run locally.
+Subsequent PR #4 and main CI passed the complete hosted 3.11–3.14 matrix.
+Live paid-provider calls, PyPI Trusted Publishing, signing, and public upload
+remain unrun. Protocol tests use deterministic local HTTP transports.
 
 ## Adversarial final review
 
@@ -297,6 +298,73 @@ treated as a security-reviewed deployment surface; any canonical application reu
 requires its own review in the owning repository.
 
 ## Release disposition
+
+### Final hardening verification (2026-08-31)
+
+The competitive feature PR [#4](https://github.com/Deathcharge/samsarix-agent-engine/pull/4)
+was already merged at `38e8796`. Its
+[main CI](https://github.com/Deathcharge/samsarix-agent-engine/actions/runs/31692861551)
+passed, including Python 3.11–3.14. The final follow-up closes two remaining
+boundary issues and adds a repeatable distribution-installation gate.
+
+Commands below used `.venv/Scripts/python.exe` on Windows (Python 3.11.9);
+`python` abbreviates that exact interpreter. No live model credentials were used.
+
+| Command or check | Actual result |
+| --- | --- |
+| `python -m pip install -e .` | Exit 0; standalone editable installation refreshed successfully. |
+| `python -m ruff check src tests examples scripts` | Exit 0; all checks passed. |
+| `python -m ruff format --check src tests examples scripts` | Exit 0; 19 files already formatted. |
+| `python -m mypy src tests scripts` | Exit 0; strict checking passed for 13 files. |
+| `python -m pytest tests/test_models.py tests/test_engine.py tests/test_providers.py -q` | Exit 0; 145 focused tests passed. |
+| `python -m pytest --cov=samsarix_agent_engine --cov-branch --cov-report=term-missing` | Exit 0; 160 tests passed; 92.59% combined statement/branch coverage, above the 90% gate. |
+| `python -m bandit -r src/samsarix_agent_engine -q` | Exit 0; no findings. |
+| `python -m pip_audit -r requirements.txt` | Exit 0; no known runtime dependency vulnerabilities. |
+| `python -m pip check` | Exit 0; no broken requirements. |
+| `python -m compileall -q src tests examples scripts` | Exit 0. |
+| `python -m build --outdir dist/final-20260831` | Exit 0; isolated source distribution and wheel-from-sdist builds passed. |
+| `python -m twine check dist/final-20260831/*` | Both distributions passed. |
+| `python scripts/smoke_wheel.py dist/final-20260831/samsarix_agent_engine-0.1.0-py3-none-any.whl` | Exit 0; fresh wheel environment, isolated public imports/version, help/version, text/JSON/stdin/streaming CLI, dependency check, and all six examples passed outside the checkout. |
+| Workflow YAML and archive guards | Both workflow YAML files parsed; their exact Python archive guard blocks passed locally. Wheel has 17 entries; source distribution has 57. Script, docs, notices, typing marker, and use cases are present; legacy package trees are absent. |
+| Installed distribution metadata | Samsarix LLC, both Samsarix contact addresses, and `License-Expression: MPL-2.0` verified. |
+| Independent boundary review | Read-only investigation plus one fresh candidate review; 145 focused tests passed independently. No concrete surviving bypass or legitimate regression found. |
+
+Initial new-test runs exposed only test-harness issues: million-character pytest
+parameter IDs exceeded Windows environment limits, and a test referenced a
+non-exported module attribute under strict mypy. Short IDs and a direct standard
+library import resolved both; the final checks above passed.
+
+Security outcomes:
+
+- **Fixed:** secret-bearing exception causes reached ordinary formatted tracebacks
+  through sanitized wrappers. Engine callbacks/providers/cleanup, transport and
+  response decoding, tool schema parsing, and snapshot parsing now suppress those
+  causes. Regression tests inspect complete formatted tracebacks, not just
+  exception messages.
+- **Fixed:** direct `parse_json_output` calls accepted unbounded raw input before
+  JSON decoding. A hard 1,000,000-character ceiling and lower caller-selectable
+  `max_chars` reject oversized text before stripping or decoding. Spy tests prove
+  the decoder is not called; whitespace, wide arrays, non-ASCII text, exact-limit
+  success, and invalid limit configurations were checked.
+- Existing cancellation, retryability, public error types, tool-result budget
+  errors, failure metrics, successful structured output, and history behavior
+  remain covered. The earlier audit-metadata fix remains in main.
+- Suppression does not erase exception context/frame locals. Snapshots contain
+  conversation text; event identifiers are caller-supplied metadata. The README
+  and security policy now state those application responsibilities accurately.
+
+The historical workbench scan targeted `e2160bf`, not current main. Its durable
+report assembly encountered artifact-access failures and remains unsealed; it is
+not claimed as a completed clean scan. The current code-level fixes, independent
+review, executable regression suite, static check, and dependency audit above are
+the reproducible acceptance evidence.
+
+CI and the protected release workflow now run the same wheel smoke script before
+accepting artifacts. Final follow-up PR checks must pass before merge; post-merge
+main CI is checked separately. No PyPI upload, release tag, production deployment,
+paid-provider request, mailbox test, or external service provisioning occurred.
+
+### Product disposition
 
 **Competitive alpha release candidate with named external gates.** The bounded
 SDK/CLI is independently installable, has two executable business-use-case proofs,

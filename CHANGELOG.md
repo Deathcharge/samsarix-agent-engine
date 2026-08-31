@@ -37,6 +37,13 @@ once releases begin.
 
 ### Security
 
+- Sanitized error wrappers suppress original exception causes in ordinary formatted
+  tracebacks, including callback, transport, parser, and provider-cleanup failures.
+- Direct strict JSON parsing has a hard 1,000,000-character pre-decode ceiling and
+  an optional lower caller limit; oversized tool results retain budget-error semantics.
+- Clarified that snapshot conversation text and caller-supplied event identifiers
+  may contain sensitive data and require application-owned handling.
+
 - Tool lifecycle audit events use registered local names and per-agent local
   correlation IDs, preventing provider-selected tool metadata from entering the
   content-free event trail.

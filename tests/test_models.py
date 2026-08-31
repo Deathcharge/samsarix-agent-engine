@@ -1,3 +1,6 @@
+import json
+import traceback
+
 import pytest
 
 from samsarix_agent_engine import (
@@ -294,3 +297,64 @@ def test_strict_json_parser_accepts_values_and_rejects_ambiguity() -> None:
     with pytest.raises(StructuredOutputError, match="invalid Unicode"):
         parse_json_output(r'{"\ud800": "value"}')
     assert parse_json_output("1.25") == 1.25
+
+
+@pytest.mark.parametrize("limit", [True, False, 0, -1, 1_000_001, 1.5, "10", None])
+def test_json_character_limit_configuration(limit: object) -> None:
+    with pytest.raises(InputValidationError, match="max_chars"):
+        parse_json_output("null", max_chars=limit)  # type: ignore[arg-type]
+
+
+def test_json_character_limit_accepts_exact_boundary() -> None:
+    assert parse_json_output("null", max_chars=4) is None
+    assert parse_json_output("0", max_chars=1) == 0
+    content = '"' + "a" * 999_998 + '"'
+    assert parse_json_output(content) == "a" * 999_998
+
+
+@pytest.mark.parametrize(
+    "content", ['"' + "a" * 999_999 + '"', " " * 1_000_001], ids=["json-string", "whitespace"]
+)
+def test_json_hard_limit_rejects_before_decoding(
+    content: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unexpected_decode(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("oversized input reached json.loads")
+
+    monkeypatch.setattr(json, "loads", unexpected_decode)
+    with pytest.raises(StructuredOutputError, match="character limit"):
+        parse_json_output(content)
+
+
+def test_json_custom_limit_counts_whitespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected_decode(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("oversized input reached json.loads")
+
+    monkeypatch.setattr(json, "loads", unexpected_decode)
+    with pytest.raises(StructuredOutputError, match="character limit"):
+        parse_json_output(" null ", max_chars=5)
+
+
+def test_json_decode_failure_suppresses_original_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_decode(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("private-parser-detail")
+
+    monkeypatch.setattr(json, "loads", fail_decode)
+    with pytest.raises(StructuredOutputError) as captured:
+        parse_json_output("null")
+    assert "private-parser-detail" not in "".join(traceback.format_exception(captured.value))
+    assert captured.value.__cause__ is None
+    assert captured.value.__suppress_context__ is True
+
+
+@pytest.mark.parametrize("size", [50_001, 1_000_001])
+def test_oversized_tool_schema_keeps_size_error(size: int) -> None:
+    with pytest.raises(InputValidationError, match="at most 50000"):
+        ToolDefinition(
+            name="read",
+            description="Read.",
+            parameters={"description": "a" * size},
+            handler=lambda _arguments: None,
+        )
